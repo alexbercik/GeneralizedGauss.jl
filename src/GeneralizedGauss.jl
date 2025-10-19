@@ -19,4 +19,6 @@ include("quadrule.jl")
 include("representations.jl")
 include("gengauss.jl")
 
+include("polynomial/legendre.jl")
+
 end # module

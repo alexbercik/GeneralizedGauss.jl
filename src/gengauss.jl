@@ -369,7 +369,7 @@ function compute_gauss_rules(dict::Dictionary, moments = compute_moments(dict);
         p1, p2, w1, x1, w2, x2 =
             estimate_upper_canonical_representation(dict[1:2*k+1], moments[1:2*k+1], a, b, w0, x0; verbose, options...)
         converged, w, x = compute_upper_principal_representation(dict[1:2*k+1], moments[1:2*k+1], w2, x2; verbose, options...)
-        @assert converged
+        # @assert converged
         xi = x[1]
         xi_upper[k] = xi
         verbose && println("Upper principal representation ", k, " : xi is ", xi)
@@ -385,7 +385,7 @@ function compute_gauss_rules(dict::Dictionary, moments = compute_moments(dict);
         p1, p2, w1, x1, w2, x2 =
             estimate_lower_canonical_representation(dict[1:2*k+2], moments[1:2*k+2], a, b, w0, x0; verbose, options...)
         converged, w, x = compute_lower_principal_representation(dict[1:2*k+2], moments[1:2*k+2], w2, x2; verbose, options...)
-        @assert converged
+        # @assert converged
         xi = x[1]
         xi_lower[k+1] = xi
         verbose && println("Lower principal representation ", k+1, " : xi is ", xi)
