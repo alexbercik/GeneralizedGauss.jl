@@ -56,6 +56,40 @@ julia> x_upper
 ```
 The method returns upper and lower principal representations. It is described in the above-mentioned paper what they are. In this case, the lower principal representations in `x_lower` are the Gauss-Legendre quadrature points for `n=1,2,3,4,5`. The upper principal representations correspond to Gauss-Radau rules, which include the right endpoint `x=1`.
 
+## Configuration examples
+
+The generalized Gaussian construction can be steered through keyword
+arguments on `compute_gauss_rule`/`compute_gauss_rules`. The snippets below use
+the polynomial example above as a reference.
+
+### Classic behavior (defaults)
+
+```julia
+julia> w, x = compute_gauss_rule(basis)
+```
+
+### Start continuation from the left endpoint
+
+```julia
+julia> w, x = compute_gauss_rule(basis; add_endpoint=:left)
+```
+
+### Target the upper principal rule
+
+You can return the upper principal representation (containing the anchored endpoint)
+instead of the default lower Gauss rule:
+
+```julia
+julia> w, x = compute_gauss_rule(basis; principal=:upper)
+```
+
+### Automatic stopping behavior
+
+The function automatically determines whether to stop at an odd-length rule based
+on the length of the dictionary: if the dictionary is even, it computes the full
+sequence; if the dictionary is odd, it stops at the odd-length rule. This behavior
+is automatic and does not require any parameters.
+
 ## A function space with a logarithmic singularity
 
 Quadrature rules can be computed for more general function spaces as well. For this we use the [BasisFunctions](https://github.com/JuliaApproximation/BasisFunctions.jl) package.

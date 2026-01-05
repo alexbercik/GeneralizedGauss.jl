@@ -111,6 +111,7 @@ function newton_to_quad(sys::QuadRuleSystem, newton_x)
     x = zeros(T, length(sys.data))
     w = zeros(T, length(sys.data))
     newton_to_quad!(sys, w, x, newton_x)
+    w, x
 end
 
 function quad_to_newton(sys::QuadRuleSystem, w, x)

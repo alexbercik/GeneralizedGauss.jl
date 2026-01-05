@@ -1,17 +1,36 @@
-# Activate the appropriate project
+# Load Revise for automatic module reloading during development
 using Pkg
-io = stderr #devnull
-Pkg.activate(joinpath(homedir(), "julia_environments", "generalized_gauss"); io=io)
-Pkg.add(path="/Users/alex/Library/CloudStorage/OneDrive-UniversityofToronto/UTIAS/Other_Peoples_Things/GeneralizedGauss.jl")
+try
+    using Revise
+catch
+    Pkg.add("Revise")
+    using Revise
+end
+
+# Activate project and load dependencies
+project_root = "/Users/alex/Library/CloudStorage/OneDrive-UniversityofToronto/UTIAS/Other_Peoples_Things/GeneralizedGauss.jl"
+Pkg.activate(project_root)
 Pkg.instantiate()
-using BasisFunctions, DomainSets, GeneralizedGauss
+
+using BasisFunctions, DomainSets, LinearAlgebra, NLsolve
+
+# Load GeneralizedGauss from source using includet (bypasses package system)
+original_dir = pwd()
+cd(joinpath(project_root, "src"))
+try
+    includet(joinpath(project_root, "src", "GeneralizedGauss.jl"))
+finally
+    cd(original_dir)
+end
+
+using .GeneralizedGauss: quadbasis, compute_moments, compute_gauss_rule, compute_gauss_rules
 
 # ============================================================================
 # Configuration options
 # ============================================================================
 
 # Degree of polynomial basis functions (degree n means we use polynomials up to degree n)
-n = 3
+n = 5
 
 # Option to use Chebyshev polynomials instead of monomials for better conditioning
 # Chebyshev polynomials are orthogonal on [-1,1], which helps with numerical stability
@@ -20,7 +39,7 @@ use_chebyshev = false
 
 # Option to test derivatives using finite differences
 # This verifies that the manually written derivatives are correct
-test_derivatives = true
+test_derivatives = false
 
 # Domain of integration [a, b]
 a = 0.0
@@ -33,8 +52,14 @@ newton_tol_digits = 8
 # total precision = newton_tol_digits + extra_digits
 extra_digits = 4
 
-# also get the lower and upper principal representations?
-get_principal_representations = true
+# also get the intermediate principal representations?
+get_checkpoints = true
+
+# be verbose?
+verbose = true
+
+# use exact moments (integrals of basis functions)?
+use_exact_moments = true
 
 # ============================================================================
 # Set BigFloat precision and solver tolerance
@@ -54,6 +79,11 @@ setprecision(BigFloat, bigfloat_precision_bits)
 
 # Override the default Newton solver tolerance for BigFloat.
 solver_tolerance(::Type{BigFloat}) = BigFloat(10.0)^(-newton_tol_digits)
+
+# Use BigFloat for higher precision (recommended for better accuracy)
+# Convert a and b to BigFloat to maintain precision
+a_big = BigFloat(a)
+b_big = BigFloat(b)
 
 # ============================================================================
 # Helper function: Numerical derivative using finite differences
@@ -227,54 +257,9 @@ if test_derivatives
 end
 
 # ============================================================================
-# Create quadrature basis and compute Gauss rule
+# Calculate exact integrals of basis functions
 # ============================================================================
-
-# Optionally compute Gauss rule with Float64 (commented out by default)
-#basis = quadbasis(basis_funs, basis_derivs, a, b)
-#w, x = compute_gauss_rule(basis)
-#println("w: ", w)
-#println("x: ", x)
-
-# Use BigFloat for higher precision (recommended for better accuracy)
-# Convert a and b to BigFloat to maintain precision
-a_big = BigFloat(a)
-b_big = BigFloat(b)
-basis = quadbasis(basis_funs, basis_derivs, a_big, b_big)
-if get_principal_representations
-    w, x, xi_upper, xi_lower, w_lower, w_upper, x_lower, x_upper = compute_gauss_rules(basis)
-else
-    w, x = compute_gauss_rule(basis)
-end
-println("\nFinal Gauss quadrature rule (nodes and weights):")
-println("x: ", x)
-println("w: ", w)
-if get_principal_representations
-    println("\nLower Principal representations (LG quadrature):")
-    for i in 1:length(x_lower)
-        println("$(i)-point rule x: ", x_lower[i])
-        println("$(i)-point rule w: ", w_lower[i])
-    end
-    println("\nUpper Principal representations (Raudau quadrature):")
-    for i in 1:length(x_upper)
-        println("$(i)-point rule x: ", x_upper[i])
-        println("$(i)-point rule w: ", w_upper[i])
-    end
-    #println("xi_upper: ", xi_upper)
-    #println("xi_lower: ", xi_lower)
-end
-# ============================================================================
-# Test quadrature by integrating each basis function over [a,b]
-# ============================================================================
-
-println("\n" * "="^70)
-println("Testing quadrature on basis functions (integrals over [a,b])")
-println("="^70)
-
 exact_integrals = BigFloat[]
-approx_integrals = BigFloat[]
-
-# 1. Exact integrals according to the chosen basis
 if use_chebyshev
     # Polynomial part: ChebyshevT on [a,b]
     for j in 1:n+1
@@ -287,7 +272,64 @@ else
     end
 end
 
+if use_exact_moments
+    moments = exact_integrals
+else
+    moments = nothing
+end
+
+# ============================================================================
+# Create quadrature basis and compute Gauss rule
+# ============================================================================
+
+# Optionally compute Gauss rule with Float64 (commented out by default)
+#basis = quadbasis(basis_funs, basis_derivs, a, b)
+#w, x = compute_gauss_rule(basis)
+#println("w: ", w)
+#println("x: ", x)
+
+basis = quadbasis(basis_funs, basis_derivs, a_big, b_big)
+if get_checkpoints
+    w, x, xi_checkpoints, w_checkpoints, x_checkpoints = compute_gauss_rules(basis, moments, verbose=verbose, add_endpoint=:left)
+else
+    w, x = compute_gauss_rule(basis)
+end
+println("\nFinal Gauss quadrature rule (nodes and weights):")
+println("x: ", x)
+println("w: ", w)
+if get_checkpoints
+    println("\nIntermediate quadrature rules (checkpoints):")
+    for i in 1:length(x_checkpoints)
+        if isempty(x_checkpoints[i])
+            # Anchor endpoint checkpoint
+            println("Checkpoint $(i): Anchor endpoint")
+            if i <= length(xi_checkpoints)
+                println("  xi: ", xi_checkpoints[i])
+            end
+        else
+            # Quadrature rule checkpoint
+            println("Checkpoint $(i):")
+            println("  x (nodes): ", x_checkpoints[i])
+            println("  w (weights): ", w_checkpoints[i])
+            if i <= length(xi_checkpoints)
+                println("  xi: ", xi_checkpoints[i])
+            end
+        end
+    end
+end
+# ============================================================================
+# Test quadrature by integrating each basis function over [a,b]
+# ============================================================================
+
+println("\n" * "="^70)
+println("Testing quadrature on basis functions (integrals over [a,b])")
+println("="^70)
+
+
+# 1. We already calculated the exact integrals according to the chosen basis.
+
 # 2. Approximate integrals from the quadrature rule
+approx_integrals = BigFloat[]
 for f in basis_funs
     approx = sum(w[i] * f(x[i]) for i in eachindex(w))
     push!(approx_integrals, BigFloat(approx))

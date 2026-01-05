@@ -32,33 +32,49 @@ function UpperPrincipalEven(s::Dictionary, moments = compute_moments(s))
 end
 
 # The fixed root is in K1 = [a,t1].
-function CanonicalRepresentationOdd_K1(s::Dictionary, xstar, moments = compute_moments(s))
+function CanonicalRepresentationOdd_K1(s::Dictionary, xstar, moments = compute_moments(s), fixed_idx = nothing)
     n = length(s) - 1
     @assert isodd(n)
     l = ((n+1) >> 1) + 1
-    QuadRuleFixedPoints(QuadRuleData(s, l, moments), [1, l], [xstar, supportright(s)])
+    if fixed_idx === nothing
+        fixed_idx = [1, l]
+    end
+    @assert all(idx -> idx in 1:l, fixed_idx) "fixed_idx=$fixed_idx must all be in 1:$l"
+    QuadRuleFixedPoints(QuadRuleData(s, l, moments), fixed_idx, [xstar, supportright(s)])
 end
 
 # The fixed root is in J1 = [t1,s2].
-function CanonicalRepresentationOdd_J1(s::Dictionary, xstar, moments = compute_moments(s))
+function CanonicalRepresentationOdd_J1(s::Dictionary, xstar, moments = compute_moments(s), fixed_idx = nothing)
     n = length(s) - 1
     @assert isodd(n)
     l = ((n+1) >> 1) + 1
-    QuadRuleFixedPoints(QuadRuleData(s, l, moments), [1, 2], [supportleft(s), xstar])
+    if fixed_idx === nothing
+        fixed_idx = [1, 2]
+    end
+    @assert all(idx -> idx in 1:l, fixed_idx) "fixed_idx=$fixed_idx must all be in 1:$l"
+    QuadRuleFixedPoints(QuadRuleData(s, l, moments), fixed_idx, [supportleft(s), xstar])
 end
 
 # The fixed root is in J1 = [a,s1].
-function CanonicalRepresentationEven_J1(s::Dictionary, xstar, moments = compute_moments(s))
+function CanonicalRepresentationEven_J1(s::Dictionary, xstar, moments = compute_moments(s), fixed_idx = nothing)
     n = length(s) - 1
     @assert iseven(n)
     l = (n >> 1) + 1
-    QuadRuleFixedPoints(QuadRuleData(s, l, moments), [1], [xstar])
+    if fixed_idx === nothing
+        fixed_idx = [1]
+    end
+    @assert all(idx -> idx in 1:l, fixed_idx) "fixed_idx=$fixed_idx must all be in 1:$l"
+    QuadRuleFixedPoints(QuadRuleData(s, l, moments), fixed_idx, [xstar])
 end
 
 # The fixed root is in K1 = [s1,t2].
-function CanonicalRepresentationEven_K1(s::Dictionary, xstar, moments = compute_moments(s))
+function CanonicalRepresentationEven_K1(s::Dictionary, xstar, moments = compute_moments(s), fixed_idx = nothing)
     n = length(s) - 1
     @assert iseven(n)
     l = (n >> 1) + 2
-    QuadRuleFixedPoints(QuadRuleData(s, l, moments), [1, 2, l], [supportleft(s), xstar, supportright(s)])
+    if fixed_idx === nothing
+        fixed_idx = [1, 2, l]
+    end
+    @assert all(idx -> idx in 1:l, fixed_idx) "fixed_idx=$fixed_idx must all be in 1:$l"
+    QuadRuleFixedPoints(QuadRuleData(s, l, moments), fixed_idx, [supportleft(s), xstar, supportright(s)])
 end

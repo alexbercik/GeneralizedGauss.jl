@@ -307,7 +307,7 @@ a_big = BigFloat(a)
 b_big = BigFloat(b)
 basis = quadbasis(basis_funs, basis_derivs, a_big, b_big)
 if get_principal_representations
-    w, x, xi_upper, xi_lower, w_lower, w_upper, x_lower, x_upper = compute_gauss_rules(basis)
+    w, x, xi_checkpoints, w_checkpoints, x_checkpoints = compute_gauss_rules(basis)
 else
     w, x = compute_gauss_rule(basis)
 end
@@ -315,18 +315,13 @@ println("\nFinal Gauss quadrature rule (nodes and weights):")
 println("x: ", x)
 println("w: ", w)
 if get_principal_representations
-    println("\nLower Principal representations (LG quadrature):")
-    for i in 1:length(x_lower)
-        println("$(i)-point rule x: ", x_lower[i])
-        println("$(i)-point rule w: ", w_lower[i])
+    println("\nIntermediate quadrature rules (checkpoints):")
+    for i in 1:length(x_checkpoints)
+        println("Checkpoint $(i): $(length(x_checkpoints[i]))-point rule")
+        println("  x: ", x_checkpoints[i])
+        println("  w: ", w_checkpoints[i])
+        println("  xi: ", xi_checkpoints[i])
     end
-    println("\nUpper Principal representations (Raudau quadrature):")
-    for i in 1:length(x_upper)
-        println("$(i)-point rule x: ", x_upper[i])
-        println("$(i)-point rule w: ", w_upper[i])
-    end
-    #println("xi_upper: ", xi_upper)
-    #println("xi_lower: ", xi_lower)
 end
 # ============================================================================
 # Test quadrature by integrating each basis function over [a,b]
