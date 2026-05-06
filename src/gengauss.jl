@@ -30,6 +30,12 @@ function GaussRuleConfig(; principal::Symbol = :lower, add_endpoint::Symbol = :r
     GaussRuleConfig(principal, add_endpoint)
 end
 
+default_add_endpoint(principal::Symbol) = principal == :upper ? :right : :left
+
+function resolve_add_endpoint(principal::Symbol, add_endpoint::Union{Nothing,Symbol})
+    isnothing(add_endpoint) ? default_add_endpoint(principal) : add_endpoint
+end
+
 # Helper function to get direction from add_endpoint
 get_direction(config::GaussRuleConfig) = config.add_endpoint == :right ? :right_to_left : :left_to_right
 
@@ -784,8 +790,9 @@ end
 
 
 """
-    compute_gauss_rules(dict::Dictionary, moments = compute_moments(dict);
-        verbose = false, principal = :lower, add_endpoint = :right, options...)
+    compute_gauss_rules(dict::Dictionary, moments = nothing;
+        measure = nothing, verbose = false, principal = :lower,
+        add_endpoint = nothing, options...)
 
 Compute the sequence of generalized Gaussian quadrature rules associated with
 `dict`. Returns the final rule together with all intermediate principal
@@ -806,9 +813,15 @@ intermediate iterations are *not* returned by `:upper`/`:lower` directly — the
 are exposed only through the `xi_checkpoints` / `w_checkpoints` / `x_checkpoints`
 sequences.
 
-`add_endpoint` selects the continuation path the algorithm follows:
+`add_endpoint` selects the continuation path the algorithm follows. If omitted,
+it defaults to the natural pairing for the requested principal:
 
-- `:right` (default): anchor at the right endpoint, sweeping right-to-left.
+- `principal=:lower` -> `add_endpoint=:left`
+- `principal=:upper` -> `add_endpoint=:right`
+
+With an explicit value:
+
+- `:right`: anchor at the right endpoint, sweeping right-to-left.
   Each iteration's Step 2 produces an upper-principal-style rule (right-Radau).
 - `:left`: anchor at the left endpoint, sweeping left-to-right.
   Each iteration's Step 2 produces a lower-principal-style rule (left-Radau).
@@ -828,13 +841,18 @@ Returns: `(w, x, xi_checkpoints, w_checkpoints, x_checkpoints)` where the last
 three are the sequence of intermediate quadrature rules.
 
 Keyword arguments:
+- `measure`: if `moments === nothing`, compute moments with
+  `compute_moments(dict; measure=measure)`. Ignored when `moments` are passed
+  explicitly.
 - `verbose`: print progress information during the continuation.
 - `options`: forwarded to the nonlinear solver used at every refinement step.
 """
 function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = nothing;
-        verbose = false, principal::Symbol = :lower, add_endpoint::Symbol = :right,
+        measure = nothing, verbose = false, principal::Symbol = :lower,
+        add_endpoint::Union{Nothing,Symbol} = nothing,
         options...)
     n = length(dict)
+    add_endpoint_resolved = resolve_add_endpoint(principal, add_endpoint)
     # Automatically determine stop_at_odd_gauss based on dict length
     # If dict is even, compute full sequence (stop_at_odd_gauss = false)
     # If dict is odd, stop at the odd-length rule (stop_at_odd_gauss = true)
@@ -848,19 +866,19 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
     # algorithm does not implement; refuse them up-front rather than producing
     # a wrong rule silently.
     if stop_at_odd_gauss
-        if principal == :upper && add_endpoint == :left
+        if principal == :upper && add_endpoint_resolved == :left
             error("compute_gauss_rules: for odd length(dict), principal=:upper requires add_endpoint=:right (the natural pairing produces right-Radau). Got principal=:upper, add_endpoint=:left.")
         end
-        if principal == :lower && add_endpoint == :right
+        if principal == :lower && add_endpoint_resolved == :right
             error("compute_gauss_rules: for odd length(dict), principal=:lower requires add_endpoint=:left (the natural pairing produces left-Radau). Got principal=:lower, add_endpoint=:right.")
         end
     end
 
     if isnothing(moments)
-        moments = compute_moments(dict)
+        moments = compute_moments(dict; measure=measure)
     end
 
-    config = GaussRuleConfig(; principal, add_endpoint)
+    config = GaussRuleConfig(; principal, add_endpoint=add_endpoint_resolved)
     steps = default_representation_steps(config.principal, config.add_endpoint, iseven(n))
 
     l = n >> 1 # equivalent to l = n / 2 integer division
@@ -1082,13 +1100,13 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
 end
 
 """
-    compute_gauss_rule(dict::Dictionary, moments = compute_moments(dict);
+    compute_gauss_rule(dict::Dictionary, moments = nothing;
         kwargs...)
 
 Convenience wrapper that returns only the terminal quadrature rule produced by
 `compute_gauss_rules`. All keyword arguments are forwarded.
 """
-function compute_gauss_rule(dict::Dictionary, moments = compute_moments(dict); kwargs...)
+function compute_gauss_rule(dict::Dictionary, moments = nothing; kwargs...)
     w, x, xi_checkpoints, w_checkpoints, x_checkpoints =
         compute_gauss_rules(dict, moments; kwargs...)
     # compute_gauss_rules already returns the terminal rule selected by
