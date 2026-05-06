@@ -1,3 +1,20 @@
+"""
+    _gengauss_debug_enabled() -> Bool
+
+When `true`, internal trace `println`s in this file are shown. Controlled by
+`ENV["GENGAUSS_DEBUG"]`: any of `"1"`, `"true"`, `"yes"`, `"y"` (case-insensitive)
+enables tracing; anything else (including unset) disables it. Read at call time,
+so you can toggle from the REPL without reloading the package.
+"""
+function _gengauss_debug_enabled()
+    v = strip(lowercase(get(ENV, "GENGAUSS_DEBUG", "")))
+    v in ("1", "true", "yes", "y")
+end
+
+function _gengauss_debug_println(args...; kwargs...)
+    _gengauss_debug_enabled() && println(args...; kwargs...)
+    return nothing
+end
 
 Fk(w, x, u2k, c2k) = apply_quad(w, x, u2k) - c2k
 Gk(w, x, u2kp1, c2kp1) = apply_quad(w, x, u2kp1) - c2kp1
@@ -23,7 +40,14 @@ pivot_value(x, config::GaussRuleConfig) =
     config.add_endpoint == :right ? x[1] : x[end]
 
 
-# TODO: delete this too?
+# Returns the principal representation of c^{2k+1} (length(dict) = 2k+1, n=2k even)
+# whose root structure includes the anchored endpoint:
+#  - add_endpoint=:right → UpperPrincipalEven (right endpoint fixed) = right-Radau
+#  - add_endpoint=:left  → LowerPrincipalEven (left  endpoint fixed) = left-Radau
+# Despite the name "upper_principal_rule", for :left configurations this returns
+# what is technically the *lower* principal of c^{2k+1}; the loop calls this from
+# its `:upper :principal` arm purely as a structural label, not as the actual
+# K-S "upper principal" classification.
 function upper_principal_rule(dict, moments, config::GaussRuleConfig)
     config.add_endpoint == :right ?
         UpperPrincipalEven(dict, moments) :
@@ -32,11 +56,14 @@ end
 
 default_threshold(dict::Dictionary) = default_threshold(codomaintype(dict))
 default_threshold(::Type{T}) where {T <: AbstractFloat} = sqrt(eps(T))/100
-default_threshold(::Type{BigFloat}) = big(1e-20)
+default_threshold(::Type{BigFloat}) = BigFloat(10)^(-20)
 
 solver_tolerance(::Type{Float64}) = 1e-8
 solver_tolerance(::Type{T}) where {T} = sqrt(eps(T))
-solver_tolerance(::Type{BigFloat}) = BigFloat(1e-30)
+# For BigFloat, use sqrt(eps) which adapts to the current precision setting.
+# (The previous hardcoded 1e-30 was unachievable when basis functions are
+# evaluated in Float64 precision, e.g. via ChebyshevT closures.)
+solver_tolerance(::Type{BigFloat}) = sqrt(eps(BigFloat))
 
 struct RepresentationStep
     branch::Symbol
@@ -46,25 +73,28 @@ struct RepresentationStep
 end
 
 function default_representation_steps(principal::Symbol, add_endpoint::Symbol, even_basis_length::Bool)
-
-    if principal == :lower && add_endpoint == :right && even_basis_length
-        # Start from one-point LG rule, follow:
-        # Add (fixed) right endpoint and explore upper canonical representations
-        # Pop into upper principal representation for next moment (right-Radau)
-        # Slide right endpoint down to explore lower canonical representations
-        # Pop into lower principal representation for next moment (LG)
+    # Note: the step list depends only on `add_endpoint`. The choice of where to
+    # exit the loop (Step 2 of the last iter for Radau / Step 4 for Gauss-Legendre /
+    # post-loop for Lobatto) is made in compute_gauss_rules using `principal` and
+    # the parity of length(dict). Both parities use the same step list — for odd
+    # length(dict) the loop is short-circuited at Step 2 of iter k = l via
+    # stop_target_len before Step 3/4 try to access moments past the basis.
+    if add_endpoint == :right
+        # Anchor at b. Each iteration:
+        #   Step 1: append b (weight 0) to the previous Gauss rule, trace the
+        #           K-canonical of c^{2k} as ξ slides leftward.
+        #   Step 2: pop into UP of c^{2k+1} = right-Radau.
+        #   Step 3: trace the J-canonical of c^{2k+1} as ξ continues leftward.
+        #   Step 4: pop into LP of c^{2k+2} = (k+1)-point Gauss-Legendre.
         steps = RepresentationStep[
         RepresentationStep(:upper, :canonical, :right, 1),
         RepresentationStep(:upper, :principal, :right, 1),
         RepresentationStep(:lower, :canonical, nothing, 2),
         RepresentationStep(:lower, :principal, nothing, 2),
         ]
-    elseif principal == :lower && add_endpoint == :left && even_basis_length
-        # Start from one-point LG rule, follow:
-        # Add (fixed) left endpoint and explore lower canonical representations
-        # Pop into lower principal representation for next moment (left-Radau)
-        # Slide right endpoint down to explore lower canonical representations
-        # Pop into lower principal representation for next moment (LG)
+    elseif add_endpoint == :left
+        # Mirror image of the :right step list, sweeping left-to-right.
+        # Step 2 here is the LP of c^{2k+1} = left-Radau.
         steps = RepresentationStep[
         RepresentationStep(:lower, :canonical, :left, 1),
         RepresentationStep(:lower, :principal, :left, 1),
@@ -72,7 +102,7 @@ function default_representation_steps(principal::Symbol, add_endpoint::Symbol, e
         RepresentationStep(:lower, :principal, nothing, 2),
         ]
     else
-        error("TODO: Unknown combination of principal, add_endpoint, and even_basis_length")
+        error("default_representation_steps: unknown add_endpoint=$(add_endpoint) (expected :left or :right)")
     end
     steps
 end
@@ -152,6 +182,7 @@ function solve_system(rule, w0, x0; verbose=false, options...)
     J!(Jx, x) = jacobian!(Jx, rule, x)
 
     tol = solver_tolerance(eltype(x_init))
+
     r = nlsolve(F!, J!, x_init; ftol = tol, options...)
     w, x = newton_to_quad(rule, r.zero)
     converged(r), w, x
@@ -167,8 +198,10 @@ function compute_one_point_rule(dict, moments; config::GaussRuleConfig=GaussRule
     @assert length(dict) == 2
     @assert length(moments) == 2
 
-    x0 = 1/2 * (supportleft(dict) + supportright(dict))
-    w0 = moments[1] / eval_element(dict, 1, x0)
+    a_left = supportleft(dict)
+    b_right = supportright(dict)
+    x0 = (a_left + b_right) / 2
+    w0 = moments[1] / funeval(dict, 1, x0)
     # For the one-point rule, we want to always use LowerPrincipalOdd (free point, not fixed endpoints)
     # regardless of config.add_endpoint, so create a temporary config that forces this
     one_point_config = GaussRuleConfig(; principal=config.principal, add_endpoint=:right)
@@ -177,22 +210,24 @@ function compute_one_point_rule(dict, moments; config::GaussRuleConfig=GaussRule
     w, x
 end
 
-function compute_two_point_rule(dict, moments; tol = 1e-12, options...)
+function compute_two_point_rule(dict, moments; options...)
     @assert length(dict) == 2
     @assert length(moments) == 2
 
     a = supportleft(dict)
     b = supportright(dict)
-    x = [a, b]
+    T = promote_type(typeof(a), typeof(b))
+    x = T[a, b]
 
-    u0a = eval_element(dict, 1, a)
-    u0b = eval_element(dict, 1, b)
-    u1a = eval_element(dict, 2, a)
-    u1b = eval_element(dict, 2, b)
+    u0a = funeval(dict, 1, a)
+    u0b = funeval(dict, 1, b)
+    u1a = funeval(dict, 2, a)
+    u1b = funeval(dict, 2, b)
 
     denom = u0a * u1b - u0b * u1a
 
-    if isapprox(denom, 0.0; atol = tol, rtol = 0.0)
+    tol = solver_tolerance(T)
+    if abs(denom) < tol
         error("Degenerate system: u₀(a)u₁(b) - u₀(b)u₁(a) ≈ 0.\n" *
               "The functions are linearly dependent on {a,b}, so a unique 2-point rule does not exist.")
     end
@@ -208,7 +243,7 @@ function compute_upper_canonical_representation(dict, moments, xi, w0, x0;
         verbose=false, config::GaussRuleConfig=GaussRuleConfig(), options...)
     @assert length(moments) == length(dict)
 
-    println("DEBUG: compute_upper_canonical_representation, even number of basis functions, (", length(dict), ")")
+    _gengauss_debug_println("DEBUG: compute_upper_canonical_representation, even number of basis functions, (", length(dict), ")")
 
     if iseven(length(dict))
         # even number of (n+1) basis functions (odd n)
@@ -232,19 +267,21 @@ end
 
 
 function compute_many_upper_canonical_representation(dict, moments, w0, x0, pts;
-        verbose=false, config::GaussRuleConfig=GaussRuleConfig(), options...)
+        verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
+        sweep_direction::Union{Symbol,Nothing}=nothing, options...)
 
     n = length(pts)
     T = eltype(w0)
     w = zeros(T,length(w0),n)
     x = zeros(T,length(w0),n)
     hasconverged = zeros(Bool,n)
-    order = sweep_indices(n, get_direction(config))
+    dir = sweep_direction !== nothing ? sweep_direction : get_direction(config)
+    order = sweep_indices(n, dir)
     prev_idx = nothing
-    println("w0: ", w0)
-    println("x0: ", x0)
-    println("pts: ", pts)
-    println("order: ", order)
+    _gengauss_debug_println("w0: ", w0)
+    _gengauss_debug_println("x0: ", x0)
+    _gengauss_debug_println("pts: ", pts)
+    _gengauss_debug_println("order: ", order)
     w_prev, x_prev = w0, x0
     for i in order
         xi = pts[i]
@@ -258,8 +295,8 @@ function compute_many_upper_canonical_representation(dict, moments, w0, x0, pts;
         end
         w[:,i] = w1
         x[:,i] = x1
-        println("w1: ", w1)
-        println("x1: ", x1)
+        _gengauss_debug_println("w1: ", w1)
+        _gengauss_debug_println("x1: ", x1)
         hasconverged[i] = converged
         prev_idx = i
     end
@@ -268,7 +305,8 @@ function compute_many_upper_canonical_representation(dict, moments, w0, x0, pts;
 end
 
 function estimate_upper_canonical_representation(dict, moments, a, b, w0, x0;
-        verbose=false, config::GaussRuleConfig=GaussRuleConfig(), options...)
+        verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
+        sweep_direction::Union{Symbol,Nothing}=nothing, options...)
     @assert isodd(length(dict))
     @assert length(dict) == length(moments)
     l = (length(dict)-1) >> 1
@@ -278,7 +316,7 @@ function estimate_upper_canonical_representation(dict, moments, a, b, w0, x0;
     verbose && println("Estimating upper canonical representation, xi between $(a) and $(b)")
     n = 8
     estimate_upper_canonical_representation(dict, moments, a, b, w0, x0, n;
-        verbose, config, options...)
+        verbose, config, sweep_direction, options...)
 end
 
 function interpolate_starting_values(a, b, p, w_left, x_left, w_right, x_right)
@@ -291,25 +329,28 @@ end
 switches_sign(values) = ! (all(values .> 0) || all(values .< 0))
 
 function estimate_upper_canonical_representation(dict, moments, a, b, w0, x0, n;
-        verbose=false, config::GaussRuleConfig=GaussRuleConfig(), options...)
+        verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
+        sweep_direction::Union{Symbol,Nothing}=nothing, options...)
     @assert n <= 1024
+
+    dir = sweep_direction !== nothing ? sweep_direction : get_direction(config)
 
     pts = collect(range(a, b, length=n+2)[2:end-1])
     # end_seed will be computed from refine_interval_from_sweep results if needed
     end_seed = nothing
 
-    some_converged, w, x, pts2 = compute_many_upper_canonical_representation(dict[1:end-1], moments[1:end-1], w0, x0, pts; verbose, config, options...)
+    some_converged, w, x, pts2 = compute_many_upper_canonical_representation(dict[1:end-1], moments[1:end-1], w0, x0, pts; verbose, config, sweep_direction, options...)
     if some_converged
         if verbose && length(pts2) < length(pts)
             println("Upper canonical: converged for $(length(pts2)) out of $(length(pts)) points")
         end
         Fvals = [Fk(w[:,i],x[:,i],dict[end], moments[end]) for i in 1:size(w,2)]
-        order = sweep_indices(length(Fvals), get_direction(config))
+        order = sweep_indices(length(Fvals), dir)
         Fvals_sweep = Fvals[order]
         if verbose && !ismonotonic(Fvals_sweep)
-            println("Upper canonical: function Fk is not monotonic along $(get_direction(config)) sweep but should be.")
+            println("Upper canonical: function Fk is not monotonic along $(dir) sweep but should be.")
         end
-        @assert ismonotonic(Fvals_sweep) "Upper canonical Fk sweep $(get_direction(config)) should be monotonic."
+        @assert ismonotonic(Fvals_sweep) "Upper canonical Fk sweep $(dir) should be monotonic."
         if switches_sign(Fvals_sweep)
             if first(Fvals_sweep) > 0
                 I = findlast(Fvals_sweep .> 0)
@@ -321,16 +362,23 @@ function estimate_upper_canonical_representation(dict, moments, a, b, w0, x0, n;
             pts2[left_idx], pts2[right_idx], w[:,left_idx], x[:,left_idx], w[:,right_idx], x[:,right_idx]
         else
             a_new, b_new, wa_new, xa_new, wb_new, xb_new =
-                refine_interval_from_sweep(a, b, pts2, w, x, order, Fvals_sweep, get_direction(config), (w0, x0), end_seed)
-            verbose && println("Upper canonical: refining from $((a,b)) to $((a_new,b_new)) in direction $(get_direction(config))")
-            # Select the appropriate boundary based on add_endpoint
-            w0_new = config.add_endpoint == :left ? wa_new : wb_new
-            x0_new = config.add_endpoint == :left ? xa_new : xb_new
-            estimate_upper_canonical_representation(dict, moments, a_new, b_new, w0_new, x0_new, n; verbose, config, options...)
+                refine_interval_from_sweep(a, b, pts2, w, x, order, Fvals_sweep, dir, (w0, x0), end_seed)
+            verbose && println("Upper canonical: refining from $((a,b)) to $((a_new,b_new)) in direction $(dir)")
+            # Select the appropriate seed based on sweep direction:
+            # the seed should come from the START of the sweep (where we have
+            # the known good solution).
+            if sweep_direction !== nothing
+                w0_new = dir == :left_to_right ? wa_new : wb_new
+                x0_new = dir == :left_to_right ? xa_new : xb_new
+            else
+                w0_new = config.add_endpoint == :left ? wa_new : wb_new
+                x0_new = config.add_endpoint == :left ? xa_new : xb_new
+            end
+            estimate_upper_canonical_representation(dict, moments, a_new, b_new, w0_new, x0_new, n; verbose, config, sweep_direction, options...)
         end
     else
         verbose && println("Upper canonical: increasing n to $(2n)")
-        estimate_upper_canonical_representation(dict, moments, a, b, w0, x0, 2n; verbose, config, options...)
+        estimate_upper_canonical_representation(dict, moments, a, b, w0, x0, 2n; verbose, config, sweep_direction, options...)
     end
 end
 
@@ -358,19 +406,26 @@ function compute_lower_canonical_representation(dict, moments, xi, w0, x0;
     @assert length(moments) == length(dict)
 
     if isodd(length(dict))
-        println("DEBUG: compute_lower_canonical_representation, odd number of basis functions, (", length(dict), ")")
+        _gengauss_debug_println("DEBUG: compute_lower_canonical_representation, odd number of basis functions, (", length(dict), ")")
         # odd number of (n+1) basis functions (even n)
         @assert length(w0) == (length(dict)+1)>>1
         fixed_idx = [config.add_endpoint == :right ? 1 : length(w0)]
         rule = CanonicalRepresentationEven_J1(dict, xi, moments, fixed_idx)
     else
-        println("DEBUG: compute_lower_canonical_representation, even number of basis functions, (", length(dict), ")")
+        _gengauss_debug_println("DEBUG: compute_lower_canonical_representation, even number of basis functions, (", length(dict), ")")
         # even number of (n+1) basis functions (odd n)
         @assert length(w0) == (length(dict)>>1)+1
         if config.add_endpoint == :right
-            error("TODO")
+            # Mirror of the :left branch below: we added the right endpoint b
+            # (with weight 0) to a previous principal representation, and ξ is
+            # the leftmost moving root. The canonical that includes b is the
+            # K_1 canonical (Karlin–Studden, see eq. (2.12) of the paper).
+            fixed_idx = [1, length(w0)]
+            rule = CanonicalRepresentationOdd_K1(dict, xi, moments, fixed_idx)
         else
-            fixed_idx = [1,length(w0)]
+            # Added the left endpoint a; ξ is the rightmost moving root.
+            # The canonical including a is the J_1 canonical (eq. (2.13)).
+            fixed_idx = [1, length(w0)]
             rule = CanonicalRepresentationOdd_J1(dict, xi, moments, fixed_idx)
         end
     end
@@ -397,10 +452,10 @@ function compute_many_lower_canonical_representation(dict, moments, w0, x0, pts;
     hasconverged = zeros(Bool,n)
     order = sweep_indices(n, get_direction(config))
     prev_idx = nothing
-    println("w0: ", w0)
-    println("x0: ", x0)
-    println("pts: ", pts)
-    println("order: ", order)
+    _gengauss_debug_println("w0: ", w0)
+    _gengauss_debug_println("x0: ", x0)
+    _gengauss_debug_println("pts: ", pts)
+    _gengauss_debug_println("order: ", order)
     w_prev, x_prev = w0, x0
     for i in order
         xi = pts[i]
@@ -416,8 +471,8 @@ function compute_many_lower_canonical_representation(dict, moments, w0, x0, pts;
         end
         w[:,i] = w1
         x[:,i] = x1
-        println("w1: ", w1)
-        println("x1: ", x1)
+        _gengauss_debug_println("w1: ", w1)
+        _gengauss_debug_println("x1: ", x1)
         hasconverged[i] = converged
         prev_idx = i
     end
@@ -455,9 +510,9 @@ function estimate_lower_canonical_representation(dict, moments, a, b, w0, x0, n;
         if verbose && !ismonotonic(Fvals_sweep)
             println("Lower canonical: function Fk is not monotonic along $(get_direction(config)) sweep but should be.")
         end
-        @assert ismonotonic(Fvals_sweep) "Lower canonical Fk sweep $(get_direction(config)) should be monotonic."
+        @assert ismonotonic(Fvals_sweep) "Lower canonical Fk sweep $(get_direction(config)) should be monotonic.\nFvals_sweep = $(Fvals_sweep)\npts = $(pts2)\nThis may indicate insufficient BigFloat precision for the current basis and degree.\nConsider increasing extra_digits or using a better-conditioned basis (e.g. Chebyshev)."
         if switches_sign(Fvals_sweep)
-            println("DEBUG: Detected sign change in lower canonical")
+            _gengauss_debug_println("DEBUG: Detected sign change in lower canonical")
             if first(Fvals_sweep) > 0
                 I = findlast(Fvals_sweep .> 0)
             else
@@ -465,10 +520,10 @@ function estimate_lower_canonical_representation(dict, moments, a, b, w0, x0, n;
             end
             left_idx = order[I]
             right_idx = order[I+1]
-            println("DEBUG: Sign change detected at indices $(left_idx) and $(right_idx)")
+            _gengauss_debug_println("DEBUG: Sign change detected at indices $(left_idx) and $(right_idx)")
             pts2[left_idx], pts2[right_idx], w[:,left_idx], x[:,left_idx], w[:,right_idx], x[:,right_idx]
         else
-            println("DEBUG: No sign change detected, refining interval")
+            _gengauss_debug_println("DEBUG: No sign change detected, refining interval")
             a_new, b_new, wa_new, xa_new, wb_new, xb_new =
                 refine_interval_from_sweep(a, b, pts2, w, x, order, Fvals_sweep, get_direction(config), (w0, x0), end_seed)
             verbose && println("Lower canonical: refining from $((a,b)) to $((a_new,b_new)) in direction $(get_direction(config))")
@@ -498,33 +553,283 @@ function compute_lower_principal_representation(dict, moments, w0, x0;
         if e isa InterruptException
             rethrow()
         end
-        println("ERROR THROWN in computation of lower principal")
-        @show e
+        println("ERROR THROWN in computation of lower principal: ", e)
         false, w0, x0
+    end
+end
+
+"""
+    compute_canonical_both_ends(dict, moments, ξ, w0, x0; position_of_xi, ...)
+
+Newton-solve the canonical of `c^{length(dict)}` (length(dict) must be odd, so
+`n` is even) with both endpoints AND a third interior position fixed. The
+interior fixed position is at index `position_of_xi` and takes value `ξ`. This
+calls `CanonicalRepresentationEven_K1` with the appropriate `fixed_idx`:
+
+- `position_of_xi == 2`: the K_1 form (eq. 2.16) — ξ is the 2nd-leftmost root.
+- `position_of_xi == l_rule - 1`: the symmetric K_{l-1} form — ξ is the
+  2nd-rightmost root.
+
+DOFs: `l_rule = (n>>1) + 2` weights + `(l_rule - 3)` free interior positions =
+`length(dict)` equations. Square Newton.
+"""
+function compute_canonical_both_ends(dict, moments, ξ, w0, x0;
+        verbose=false, position_of_xi::Int=2, options...)
+    @assert isodd(length(dict)) "compute_canonical_both_ends: length(dict) must be odd (so n is even); got $(length(dict))"
+    @assert length(moments) == length(dict)
+    n_inner = length(dict) - 1
+    l_rule = (n_inner >> 1) + 2
+    @assert length(w0) == l_rule
+    @assert 2 <= position_of_xi <= l_rule - 1 "position_of_xi must be in 2..$(l_rule-1)"
+    fixed_idx = [1, position_of_xi, l_rule]
+    rule = CanonicalRepresentationEven_K1(dict, ξ, moments, fixed_idx)
+    try
+        solve_system(rule, w0, x0; verbose, options...)
+    catch e
+        if e isa InterruptException
+            rethrow()
+        end
+        verbose && println("compute_canonical_both_ends: error at ξ=$(ξ): ", e)
+        false, w0, x0
+    end
+end
+
+"""
+    compute_many_canonical_both_ends(dict, moments, w0, x0, pts, sweep_dir; ...)
+
+Sweep over `pts` in the order given by `sweep_dir` (`:left_to_right` or
+`:right_to_left`), solving the both-endpoints canonical at each ξ. Each step
+warm-seeds from the previous *converged* solution; if Newton fails we keep the
+previous warm seed rather than overwriting it with the failure result.
+"""
+function compute_many_canonical_both_ends(dict, moments, w0, x0, pts, sweep_dir::Symbol;
+        verbose=false, position_of_xi::Int=2, options...)
+    n = length(pts)
+    T = eltype(w0)
+    w = zeros(T, length(w0), n)
+    x = zeros(T, length(w0), n)
+    has_converged = falses(n)
+    order = sweep_indices(n, sweep_dir)
+    w_prev, x_prev = w0, x0
+    for i in order
+        ok, w_new, x_new = compute_canonical_both_ends(dict, moments, pts[i], w_prev, x_prev;
+            verbose, position_of_xi, options...)
+        w[:, i] = w_new
+        x[:, i] = x_new
+        has_converged[i] = ok
+        if ok
+            w_prev = w_new
+            x_prev = x_new
+        end
+    end
+    I = findall(has_converged)
+    any(has_converged), w[:, I], x[:, I], pts[I]
+end
+
+"""
+    estimate_canonical_both_ends(dict, moments, ξ_lo, ξ_hi, w0, x0; ...)
+
+Bisect ξ in `(ξ_lo, ξ_hi)` to bracket the root of
+`F(ξ) = ⟨w(ξ), dict[end](x(ξ))⟩ - moments[end]`,
+where the canonical at ξ is the both-endpoints canonical of `c^{length(dict)-1}`
+(i.e. we strip the last basis function so the canonical is square, and use the
+last basis function as the moment monitor — same pattern as
+`estimate_lower_canonical_representation`).
+
+Mirrors the recursive sample-and-refine logic of
+`estimate_lower_canonical_representation`. Returns `(ξ_left, ξ_right, w_left,
+x_left, w_right, x_right)` bracketing the sign change, or `nothing` if the
+bracket cannot be established within `max_n_samples`.
+"""
+function estimate_canonical_both_ends(dict, moments, ξ_lo, ξ_hi, w0, x0;
+        position_of_xi::Int=2, sweep_dir::Symbol=:left_to_right,
+        n_samples::Int=8, max_n_samples::Int=1024, verbose=false, options...)
+    @assert n_samples <= max_n_samples
+    pts = collect(range(ξ_lo, ξ_hi; length=n_samples+2)[2:end-1])
+    dict_inner = dict[1:end-1]
+    moments_inner = moments[1:end-1]
+    some_ok, w, x, pts2 = compute_many_canonical_both_ends(dict_inner, moments_inner,
+        w0, x0, pts, sweep_dir; position_of_xi, verbose, options...)
+    if !some_ok
+        if 2 * n_samples > max_n_samples
+            verbose && println("estimate_canonical_both_ends: no convergence on $(n_samples) samples; max reached")
+            return nothing
+        end
+        verbose && println("estimate_canonical_both_ends: no convergence; doubling to $(2*n_samples)")
+        return estimate_canonical_both_ends(dict, moments, ξ_lo, ξ_hi, w0, x0;
+            position_of_xi, sweep_dir, n_samples=2*n_samples, max_n_samples, verbose, options...)
+    end
+    if verbose && length(pts2) < length(pts)
+        println("estimate_canonical_both_ends: $(length(pts2))/$(length(pts)) samples converged")
+    end
+    Fvals = [Fk(w[:, i], x[:, i], dict[end], moments[end]) for i in 1:size(w, 2)]
+    order = sweep_indices(length(Fvals), sweep_dir)
+    Fvals_sweep = Fvals[order]
+    if verbose && !ismonotonic(Fvals_sweep)
+        println("estimate_canonical_both_ends: F not monotonic in sweep direction (may indicate samples outside K_1)")
+    end
+    if switches_sign(Fvals_sweep)
+        j = first(Fvals_sweep) > 0 ? findlast(Fvals_sweep .> 0) : findlast(Fvals_sweep .< 0)
+        left_i = order[j]
+        right_i = order[j + 1]
+        return pts2[left_i], pts2[right_i], w[:, left_i], x[:, left_i], w[:, right_i], x[:, right_i]
+    else
+        if 2 * n_samples > max_n_samples
+            verbose && println("estimate_canonical_both_ends: no sign change at $(n_samples) samples; max reached")
+            return nothing
+        end
+        verbose && println("estimate_canonical_both_ends: no sign change; doubling samples to $(2*n_samples)")
+        return estimate_canonical_both_ends(dict, moments, ξ_lo, ξ_hi, w0, x0;
+            position_of_xi, sweep_dir, n_samples=2*n_samples, max_n_samples, verbose, options...)
+    end
+end
+
+"""
+    compute_lobatto_step(dict, moments, lp_w, lp_x, radau_w, radau_x, config; ...)
+
+Compute the Gauss-Lobatto rule (upper principal of `c^{n_dict}`) by tracing the
+K-canonical of `c^{n_dict-1}` with both endpoints fixed and one interior
+position used as the continuation parameter ξ.
+
+For `add_endpoint=:right`: ξ is the 2nd-leftmost position of the (l+1)-point
+canonical. The seed is the right-Radau rule (UP of `c^{n_dict-1}`) padded with
+`a` at weight 0; this seed is structurally on the K_1 canonical at the left
+boundary, ξ_seed = `radau_x[1]` = `s_1` of `c^{n_dict-1}`. Bracket is
+`(radau_x[1], lp_x[2])` — the seed's natural ξ as the lower bound and the
+second LP node of `c^{n_dict}` as the upper, which contains the Lobatto rule's
+ξ value (= `s_2` of `c^{n_dict}`).
+
+For `add_endpoint=:left`: ξ is the 2nd-rightmost position. Seed is the
+left-Radau rule (LP of `c^{n_dict-1}`) padded with `b` at weight 0; ξ_seed =
+`radau_x[end]` = `t_l` of `c^{n_dict-1}` = right boundary of K_{l-1}. Bracket
+is `(lp_x[end-1], radau_x[end])`.
+
+The bisection finds ξ where the next-moment residual `F(ξ)` changes sign; the
+better of the two bracket endpoints (the one with smaller `|F|`) is then handed
+to one final `UpperPrincipalOdd` Newton solve to refine to the exact Lobatto rule.
+
+Requires `iseven(length(dict))`.
+"""
+function compute_lobatto_step(dict, moments, lp_w, lp_x, radau_w, radau_x,
+        config::GaussRuleConfig; verbose=false, options...)
+    n_dict = length(dict)
+    @assert iseven(n_dict) "Gauss-Lobatto requires even basis length"
+    @assert length(lp_x) == (n_dict >> 1) "lp rule expected to have l = $(n_dict>>1) nodes"
+    T = eltype(lp_w)
+    a_pt = T(supportleft(dict))
+    b_pt = T(supportright(dict))
+
+    if config.add_endpoint == :right
+        # Seed: prepend a (weight 0) to right-Radau (UP of c^{n_dict-1}).
+        # Right-Radau has its rightmost node at b, so the padded seed has shape
+        # [a, x_1_radau, ..., x_{l-1}_radau, b]. ξ at index 2 = first interior
+        # of right-Radau = s_1 of c^{n_dict-1} = LEFT boundary of K_1.
+        seed_w = vcat(zero(T), radau_w)
+        seed_x = vcat(a_pt, radau_x)
+        position_of_xi = 2
+        # Bracket: (s_1 of c^{n_dict-1}, t_2 of c^{n_dict}).
+        # Lower = radau_x[1] = the seed's natural ξ (the K_1 left boundary).
+        # Upper = lp_x[2] (or lp_x[end] when l=2). Lobatto's position 2 value
+        # is s_2 of c^{n_dict} ∈ (t_1, t_2) of c^{n_dict} = (lp_x[1], lp_x[2]),
+        # which lies inside this bracket. Sweeping left-to-right keeps Newton
+        # close to a converged previous solution at every step.
+        ξ_lo = T(radau_x[1])
+        ξ_hi = T(length(lp_x) >= 2 ? lp_x[2] : lp_x[end])
+        sweep_dir = :left_to_right
+    else
+        # Mirror: append b (weight 0) to left-Radau (LP of c^{n_dict-1}).
+        # Left-Radau has its leftmost node at a, so the padded seed has shape
+        # [a, x_2_radau, ..., x_l_radau, b]. ξ at index l = last interior
+        # of left-Radau = t_l of c^{n_dict-1} = RIGHT boundary of K_{l-1}.
+        seed_w = vcat(radau_w, zero(T))
+        seed_x = vcat(radau_x, b_pt)
+        position_of_xi = length(seed_x) - 1
+        # Upper = radau_x[end] = the seed's natural ξ (right boundary of
+        # K_{l-1}). Lower = lp_x[end-1] (or lp_x[1] when l=2).
+        ξ_lo = T(length(lp_x) >= 2 ? lp_x[end-1] : lp_x[1])
+        ξ_hi = T(radau_x[end])
+        sweep_dir = :right_to_left
+    end
+
+    verbose && println("  compute_lobatto_step: bracket [ξ_lo, ξ_hi] = [$(ξ_lo), $(ξ_hi)], sweep=$(sweep_dir), pos_of_xi=$(position_of_xi)")
+    verbose && println("  compute_lobatto_step: seed_x = $(seed_x)")
+
+    bracket = estimate_canonical_both_ends(dict, moments, ξ_lo, ξ_hi, seed_w, seed_x;
+        position_of_xi, sweep_dir, verbose, options...)
+    if bracket === nothing
+        verbose && println("compute_lobatto_step: bracket not found; falling back to seed")
+        return false, seed_w, seed_x
+    end
+
+    _ξl, _ξr, w_left, x_left, w_right, x_right = bracket
+    F_left = Fk(w_left, x_left, dict[end], moments[end])
+    F_right = Fk(w_right, x_right, dict[end], moments[end])
+    seed_w_final, seed_x_final = abs(F_left) <= abs(F_right) ? (w_left, x_left) : (w_right, x_right)
+
+    # Final Newton on UpperPrincipalOdd: same fixed structure as the canonical
+    # (a, b at indices 1 and l_rule), but now ξ is unfixed and the system is
+    # solving for all 2l moments at once. The bracket-end seed is already very
+    # close to the true Lobatto rule, so this converges quickly.
+    rule = UpperPrincipalOdd(dict, moments)
+    try
+        return solve_system(rule, seed_w_final, seed_x_final; verbose, options...)
+    catch e
+        if e isa InterruptException
+            rethrow()
+        end
+        println("compute_lobatto_step: error in final UpperPrincipalOdd Newton: ", e)
+        return false, seed_w_final, seed_x_final
     end
 end
 
 
 """
     compute_gauss_rules(dict::Dictionary, moments = compute_moments(dict);
-        verbose = false, principal = :lower, add_endpoint = :right, config = nothing, options...)
+        verbose = false, principal = :lower, add_endpoint = :right, options...)
 
 Compute the sequence of generalized Gaussian quadrature rules associated with
-`dict`. The function returns the final Gauss rule together with all intermediate
-principal representations. Keyword arguments:
+`dict`. Returns the final rule together with all intermediate principal
+representations encountered during continuation.
 
-- `verbose`: print progress information during the continuation process.
-- `principal`: which principal representation to return as the final rule.
-  - `:lower` (default): returns the lower principal representation (e.g. Gauss-Lobatto rule or right-anchored Radau).
-  - `:upper`: returns the upper principal representation (e.g. Gauss rule or left-anchored Radau).
-- `add_endpoint`: which endpoint to anchor during the computation.
-  - `:right` (default): anchor at the right endpoint.
-  - `:left`: anchor at the left endpoint.
+Which final rule comes out is determined by the parity of `length(dict)` and the
+`principal` keyword:
+
+| `length(dict)`     | `principal=:lower`              | `principal=:upper`                  |
+| ------------------ | ------------------------------- | ----------------------------------- |
+| even (= 2l)        | l-point Gauss-Legendre (no ends) | (l+1)-point Gauss-Lobatto (both ends) |
+| odd (= 2l+1)       | (l+1)-point left-Radau           | (l+1)-point right-Radau             |
+
+`:lower` is the lower principal of c^{length(dict)}; `:upper` is the upper
+principal of the same moment vector. Both are exact on all `length(dict)` basis
+functions. The l-point right-Radau and l-point left-Radau rules computed at
+intermediate iterations are *not* returned by `:upper`/`:lower` directly — they
+are exposed only through the `xi_checkpoints` / `w_checkpoints` / `x_checkpoints`
+sequences.
+
+`add_endpoint` selects the continuation path the algorithm follows:
+
+- `:right` (default): anchor at the right endpoint, sweeping right-to-left.
+  Each iteration's Step 2 produces an upper-principal-style rule (right-Radau).
+- `:left`: anchor at the left endpoint, sweeping left-to-right.
+  Each iteration's Step 2 produces a lower-principal-style rule (left-Radau).
+
+For **even** `length(dict)`, both `add_endpoint` settings reach the same final
+rule for a given `principal` (a unique Gauss-Legendre rule for `:lower`,
+a unique Gauss-Lobatto rule for `:upper`), assuming the basis functions are
+well-defined at both endpoints; only the path differs. If one endpoint hosts a
+singularity, anchor at the *other* endpoint so the seed rules remain well-defined.
+
+For **odd** `length(dict)`, the natural product of `:right` continuation is
+right-Radau and the natural product of `:left` continuation is left-Radau, so
+the (principal, add_endpoint) pair must match: `:upper` requires `:right` and
+`:lower` requires `:left`. The mismatched combinations error out up-front.
+
+Returns: `(w, x, xi_checkpoints, w_checkpoints, x_checkpoints)` where the last
+three are the sequence of intermediate quadrature rules.
+
+Keyword arguments:
+- `verbose`: print progress information during the continuation.
 - `options`: forwarded to the nonlinear solver used at every refinement step.
-
-The function automatically determines whether to stop at an odd-length rule based on
-the length of `dict`: if `dict` is even, it computes the full sequence; if `dict` is
-odd, it stops at the odd-length rule.
 """
 function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = nothing;
         verbose = false, principal::Symbol = :lower, add_endpoint::Symbol = :right,
@@ -534,6 +839,22 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
     # If dict is even, compute full sequence (stop_at_odd_gauss = false)
     # If dict is odd, stop at the odd-length rule (stop_at_odd_gauss = true)
     stop_at_odd_gauss = isodd(n)
+
+    # Reject mismatched (principal, add_endpoint) pairs for odd basis length.
+    # For odd n_dict the natural product of `:right` continuation is the upper
+    # principal of c^{n_dict} (right-Radau) and the natural product of `:left`
+    # continuation is the lower principal of c^{n_dict} (left-Radau). The other
+    # combinations would require a non-natural continuation path that this
+    # algorithm does not implement; refuse them up-front rather than producing
+    # a wrong rule silently.
+    if stop_at_odd_gauss
+        if principal == :upper && add_endpoint == :left
+            error("compute_gauss_rules: for odd length(dict), principal=:upper requires add_endpoint=:right (the natural pairing produces right-Radau). Got principal=:upper, add_endpoint=:left.")
+        end
+        if principal == :lower && add_endpoint == :right
+            error("compute_gauss_rules: for odd length(dict), principal=:lower requires add_endpoint=:left (the natural pairing produces left-Radau). Got principal=:lower, add_endpoint=:right.")
+        end
+    end
 
     if isnothing(moments)
         moments = compute_moments(dict)
@@ -567,7 +888,6 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
     push!(w_checkpoints, T[])  # Empty placeholder (no quadrature rule yet)
     push!(x_checkpoints, T[])  # Empty placeholder (no quadrature rule yet)
 
-    # TODO: Will need to adjust this when finding LGL rules
     verbose && println("Computing initial one point rule")
     w, x = compute_one_point_rule(dict[1:2], moments[1:2]; verbose, config, options...)
     verbose && println("One point quadrature rule is: ", x, ", ", w)
@@ -576,8 +896,17 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
     push!(xi_checkpoints, xi_extractor(x))
     push!(w_checkpoints, w)  # Store weights in w_checkpoints
     push!(x_checkpoints, x)  # Store nodes in x_checkpoints
-    
+
     if n == 2
+        # For length(dict) == 2 the loop body would not execute (k_max = 0).
+        # :lower → the 1-point free-node rule already in (w, x).
+        if config.principal == :upper
+            w_lob, x_lob = compute_two_point_rule(dict[1:2], moments[1:2])
+            push!(xi_checkpoints, xi_extractor(x_lob))
+            push!(w_checkpoints, w_lob)
+            push!(x_checkpoints, x_lob)
+            return w_lob, x_lob, xi_checkpoints, w_checkpoints, x_checkpoints
+        end
         return w, x, xi_checkpoints, w_checkpoints, x_checkpoints
     end
 
@@ -585,13 +914,19 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
     lower_principal_index = 0
     upper_canonical_state = nothing
     lower_canonical_state = nothing
-    last_upper_w = nothing
-    last_upper_x = nothing
+    # Track the result of the most recent Step 2 (the anchored-endpoint Radau rule).
+    # For add_endpoint=:right this is UP of c^{2k+1} (right-Radau) computed in the
+    # :upper :principal arm; for add_endpoint=:left this is LP of c^{2k+1}
+    # (left-Radau) computed in the :lower :principal arm with step.k == 1.
+    # Used as the seed for the Gauss-Lobatto post-loop step when principal=:upper
+    # and the basis length is even.
+    last_radau_w = nothing
+    last_radau_x = nothing
 
     k_max = iseven(n) ? l-1 : l
     for k = 1:k_max
         for step in steps
-            println("k = ", k, ": ", step.branch, " ", step.stage)
+            _gengauss_debug_println("k = ", k, ": ", step.branch, " ", step.stage)
             tot_moments = 2*k + step.k
             if step.stage == :canonical
                 # set initial rule as previous principal representation, possibly adding an endpoint
@@ -614,9 +949,9 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
                 else
                     error("Unknown fixed_endpoint: ", step.fixed_endpoint)
                 end
-                println("DEBUG: tot_moments: ", tot_moments)
-                println("DEBUG: length(dict[1:tot_moments]): ", length(dict[1:tot_moments]))
-                println("DEBUG: length(moments[1:tot_moments]): ", length(moments[1:tot_moments]))
+                _gengauss_debug_println("DEBUG: tot_moments: ", tot_moments)
+                _gengauss_debug_println("DEBUG: length(dict[1:tot_moments]): ", length(dict[1:tot_moments]))
+                _gengauss_debug_println("DEBUG: length(moments[1:tot_moments]): ", length(moments[1:tot_moments]))
                 if step.branch == :upper
                     _, _, _, _, w2, x2 =
                         estimate_upper_canonical_representation(dict[1:tot_moments], moments[1:tot_moments], a, b, w0, x0; verbose, config, options...)
@@ -633,36 +968,43 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
             elseif step.stage == :principal && step.branch == :upper
                 @assert upper_canonical_state !== nothing
                 w2, x2 = upper_canonical_state
-                println("DEBUG: x2: ", x2)
-                println("DEBUG: w2: ", w2)
-                println("DEBUG: len moments: ", length(moments[1:tot_moments]))
+                _gengauss_debug_println("DEBUG: x2: ", x2)
+                _gengauss_debug_println("DEBUG: w2: ", w2)
+                _gengauss_debug_println("DEBUG: len moments: ", length(moments[1:tot_moments]))
                 converged, w, x = compute_upper_principal_representation(dict[1:tot_moments], moments[1:tot_moments], w2, x2; verbose, config, options...)
                 xi = xi_extractor(x)
                 upper_principal_index += 1
                 verbose && println("Upper principal representation ", upper_principal_index, " : xi is ", xi)
                 verbose && println("    x: ", x)
-                # Track last upper principal for final selection
-                last_upper_w = w
-                last_upper_x = x
+                # Track Step 2 anchored-Radau rule (only set when step.k == 1, i.e.
+                # when this :upper :principal step is in fact Step 2 of the loop).
+                # Used as the seed for the post-loop Gauss-Lobatto step when the
+                # basis length is even.
+                if step.k == 1
+                    last_radau_w = w
+                    last_radau_x = x
+                end
                 # Add to unified checkpoints (always add, not conditional on has_upper)
                 push!(xi_checkpoints, xi)
                 push!(w_checkpoints, w)  # Store weights in w_checkpoints
                 push!(x_checkpoints, x)  # Store nodes in x_checkpoints
                 upper_canonical_state = nothing
 
+                # Odd basis length: stop here when we've computed the principal
+                # of c^{n_dict}. The :upper :principal step yields UP of c^{2k+1};
+                # for odd n_dict = 2l+1 this matches at k = l (with step.k = 1).
+                # Only the natural pairing (:upper, :right) reaches this point —
+                # the mismatched (:lower, :right) pairing for odd n_dict is
+                # rejected up-front in compute_gauss_rules.
                 if stop_target_len !== nothing && (2*k+1 == stop_target_len)
-                    return w, x, xi_checkpoints, w_checkpoints, x_checkpoints
-                end
-
-                if config.principal == :upper && iseven(n) && k == l-1
                     return w, x, xi_checkpoints, w_checkpoints, x_checkpoints
                 end
             elseif step.stage == :principal && step.branch == :lower
                 @assert lower_canonical_state !== nothing
                 w2, x2 = lower_canonical_state
-                println("DEBUG: x2: ", x2)
-                println("DEBUG: w2: ", w2)
-                println("DEBUG: len moments: ", length(moments[1:tot_moments]))
+                _gengauss_debug_println("DEBUG: x2: ", x2)
+                _gengauss_debug_println("DEBUG: w2: ", w2)
+                _gengauss_debug_println("DEBUG: len moments: ", length(moments[1:tot_moments]))
                 converged, w, x = compute_lower_principal_representation(dict[1:tot_moments], moments[1:tot_moments], w2, x2; verbose, config, options...)
                 xi = xi_extractor(x)
                 lower_principal_index += 1
@@ -673,14 +1015,69 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
                 push!(w_checkpoints, w)  # Store weights in w_checkpoints
                 push!(x_checkpoints, x)  # Store nodes in x_checkpoints
                 lower_canonical_state = nothing
+
+                # Track Step 2 anchored-Radau rule (left-Radau in the :left config).
+                # Used as the seed for the post-loop Gauss-Lobatto step when the
+                # basis length is even.
+                if step.k == 1
+                    last_radau_w = w
+                    last_radau_x = x
+                end
+
+                # Odd basis length: stop at Step 2 (step.k == 1) of iteration k=l,
+                # when the LP of c^{2l+1} (left-Radau) has just been computed.
+                # Only the natural pairing (:lower, :left) reaches this point —
+                # the mismatched (:upper, :left) pairing for odd n_dict is
+                # rejected up-front in compute_gauss_rules. Step 4 (step.k == 2)
+                # would access dict[2k+2] = dict[2l+2] past the end and is
+                # unreachable for odd n_dict because we return here first.
+                if stop_target_len !== nothing && step.k == 1 && (2*k+1 == stop_target_len)
+                    return w, x, xi_checkpoints, w_checkpoints, x_checkpoints
+                end
             end
         end
     end
-    # If principal is :upper, return the last upper principal rule
-    if config.principal == :upper && last_upper_w !== nothing
-        w = last_upper_w
-        x = last_upper_x
+    # Post-loop Gauss–Lobatto step.
+    #
+    # When the main loop runs to completion for even basis length, (w, x) holds
+    # the lower principal of c^{n_dict} — the l-point Gauss-Legendre rule, which
+    # we use BOTH as the basis for the bisection bracket and as a verification
+    # of the moment match. principal=:upper for even basis length means we want
+    # the Gauss-Lobatto rule = upper principal of the SAME moment vector:
+    # an (l+1)-point rule with both endpoints fixed.
+    #
+    # `compute_lobatto_step` does the continuation: it traces the both-endpoints
+    # K-canonical of c^{n_dict-1} parameterized by ξ at the 2nd-leftmost (resp.
+    # 2nd-rightmost) interior position, seeded by the Radau rule + missing
+    # endpoint, until ξ is the value at which the next-moment residual vanishes.
+    #
+    # The result depends only on the moment vector c^{n_dict}, not on which
+    # endpoint we anchored during continuation, so :upper, :right and :upper, :left
+    # both produce the same Lobatto rule (provided neither endpoint hosts a
+    # singularity that prevents one of the seed rules from being well-defined).
+    #
+    # For odd basis length, :upper has already been handled by the stop_target_len
+    # early-return inside the loop, so we won't reach this block.
+    if config.principal == :upper && iseven(n)
+        @assert last_radau_w !== nothing "principal=:upper post-loop step needs the Radau rule from Step 2 of the loop."
+        verbose && println("Computing Gauss-Lobatto rule (UP of c^$(n)) via post-loop step")
+        verbose && println("  GL rule (LP of c^$(n)):  x = $(x),  w = $(w)")
+        verbose && println("  Radau rule (c^$(n-1)):   x = $(last_radau_x),  w = $(last_radau_w)")
+        converged_lob, w_lob, x_lob =
+            compute_lobatto_step(dict, moments, w, x, last_radau_w, last_radau_x, config;
+                verbose, options...)
+        if converged_lob
+            verbose && println("  Lobatto rule found:     x = $(x_lob),  w = $(w_lob)")
+            push!(xi_checkpoints, xi_extractor(x_lob))
+            push!(w_checkpoints, w_lob)
+            push!(x_checkpoints, x_lob)
+            return w_lob, x_lob, xi_checkpoints, w_checkpoints, x_checkpoints
+        else
+            verbose && println("WARNING: Gauss-Lobatto continuation did not converge; returning Gauss rule instead.")
+            println("WARNING: compute_gauss_rules: Gauss-Lobatto post-loop step failed for n=$(n), add_endpoint=$(config.add_endpoint). Returning GL rule.")
+        end
     end
+
     w, x, xi_checkpoints, w_checkpoints, x_checkpoints
 end
 
@@ -694,7 +1091,9 @@ Convenience wrapper that returns only the terminal quadrature rule produced by
 function compute_gauss_rule(dict::Dictionary, moments = compute_moments(dict); kwargs...)
     w, x, xi_checkpoints, w_checkpoints, x_checkpoints =
         compute_gauss_rules(dict, moments; kwargs...)
-    # The final rule is already returned as w, x from compute_gauss_rules
-    # (it handles config.principal == :upper selection internally)
+    # compute_gauss_rules already returns the terminal rule selected by
+    # `principal` (either the LP of c^{n_dict} for :lower, the post-loop
+    # Lobatto rule for :upper with even n_dict, or the Radau rule from the
+    # stop_target_len early-return for odd n_dict).
     w, x
 end

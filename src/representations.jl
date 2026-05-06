@@ -68,6 +68,15 @@ function CanonicalRepresentationEven_J1(s::Dictionary, xstar, moments = compute_
 end
 
 # The fixed root is in K1 = [s1,t2].
+#
+# This canonical has BOTH endpoints fixed at a and b, plus a third fixed
+# position at xstar. The default `fixed_idx = [1, 2, l]` puts xstar at the
+# 2nd-leftmost position (the K_1 form, eq. (2.16) of the paper).
+#
+# Passing `fixed_idx = [1, l-1, l]` instead puts xstar at the 2nd-rightmost
+# position — the symmetric "K_{l-1}" form used by Gauss-Lobatto continuation
+# from a left-anchored sweep. fixed_pts is always [a, xstar, b], so caller
+# must pick fixed_idx so that the middle entry (= xstar) is correctly placed.
 function CanonicalRepresentationEven_K1(s::Dictionary, xstar, moments = compute_moments(s), fixed_idx = nothing)
     n = length(s) - 1
     @assert iseven(n)

@@ -40,6 +40,16 @@ end
 
 quadbasis(funs, fun_derivs, a, b) = GenericFunctionSet(funs, fun_derivs, a, b)
 
+# Custom getindex: return a new GenericFunctionSet (not a BasisFunctions SubDict).
+# This ensures that unsafe_eval_element and unsafe_eval_element_derivative dispatch
+# correctly on the sliced dictionary, which is critical for user-defined basis
+# functions (e.g. Chebyshev closures) whose derivatives rely on the
+# GenericFunctionSet method specializations.
+Base.getindex(dict::GenericFunctionSet, I::AbstractUnitRange) =
+    GenericFunctionSet(dict.funs[I],
+                       dict.fun_derivs === nothing ? nothing : dict.fun_derivs[I],
+                       dict.a, dict.b)
+
 
 funeval(basis, i, x) = basis[i](x)
 funeval(basis::Dictionary, i, x) =
