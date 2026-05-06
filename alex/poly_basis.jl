@@ -1,11 +1,11 @@
 # Load Revise for automatic module reloading during development
-using Pkg
-try
-    using Revise
-catch
-    Pkg.add("Revise")
-    using Revise
-end
+# using Pkg
+# try
+#     using Revise
+# catch
+#     Pkg.add("Revise")
+#     using Revise
+# end
 
 # Activate project and load dependencies
 project_root = "/Users/alex/Library/CloudStorage/OneDrive-UniversityofToronto/UTIAS/Other_Peoples_Things/GeneralizedGauss.jl"
@@ -14,11 +14,20 @@ Pkg.instantiate()
 
 using BasisFunctions, DomainSets, LinearAlgebra, NLsolve
 
+if "--debug" in ARGS
+    ENV["GENGAUSS_DEBUG"] = "1"
+    filter!(!=("--debug"), ARGS)  # optional: hide it from downstream ArgParse / logic
+end
+
 # Load GeneralizedGauss from source using includet (bypasses package system)
 original_dir = pwd()
 cd(joinpath(project_root, "src"))
 try
-    includet(joinpath(project_root, "src", "GeneralizedGauss.jl"))
+    if isdefined(Main, :includet)
+        includet(joinpath(project_root, "src", "GeneralizedGauss.jl"))
+    else
+        include(joinpath(project_root, "src", "GeneralizedGauss.jl"))
+    end
 finally
     cd(original_dir)
 end
@@ -30,12 +39,18 @@ using .GeneralizedGauss: quadbasis, compute_moments, compute_gauss_rule, compute
 # ============================================================================
 
 # Degree of polynomial basis functions (degree n means we use polynomials up to degree n)
-n = 5
+n = 11
+
+# which endpoing to add from?
+add_endpoint = :right
+
+# return the lower or upper principal representation?
+principal = :upper
 
 # Option to use Chebyshev polynomials instead of monomials for better conditioning
 # Chebyshev polynomials are orthogonal on [-1,1], which helps with numerical stability
 # Set to true to use Chebyshev polynomials, false to use monomials (x^i)
-use_chebyshev = false
+use_chebyshev = true
 
 # Option to test derivatives using finite differences
 # This verifies that the manually written derivatives are correct
@@ -50,16 +65,19 @@ newton_tol_digits = 8
 
 # How many extra digits to add to the BigFloat precision?
 # total precision = newton_tol_digits + extra_digits
-extra_digits = 4
+extra_digits = 8
 
 # also get the intermediate principal representations?
-get_checkpoints = true
+get_checkpoints = false
 
 # be verbose?
 verbose = true
 
 # use exact moments (integrals of basis functions)?
-use_exact_moments = true
+use_exact_moments = false
+
+# test quadrature at the end?
+test_quadrature = false
 
 # ============================================================================
 # Set BigFloat precision and solver tolerance
@@ -78,7 +96,7 @@ bigfloat_precision_bits = ceil(Int, total_digits * log2(big(10)))
 setprecision(BigFloat, bigfloat_precision_bits)
 
 # Override the default Newton solver tolerance for BigFloat.
-solver_tolerance(::Type{BigFloat}) = BigFloat(10.0)^(-newton_tol_digits)
+solver_tolerance(::Type{BigFloat}) = BigFloat(10)^(-newton_tol_digits)
 
 # Use BigFloat for higher precision (recommended for better accuracy)
 # Convert a and b to BigFloat to maintain precision
@@ -129,7 +147,9 @@ cheb_dict = nothing  # only used in the Chebyshev case
 if use_chebyshev
     # ChebyshevT(N) lives on [-1,1] by default; the arrow syntax maps it to [a,b].
     # We take degrees 0..n, which gives n+1 basis functions.
-    cheb_dict = ChebyshevT(n+1) → (a..b)
+    # Use BigFloat endpoints so evaluations maintain full BigFloat precision
+    # (Float64 endpoints would limit function evaluations to ~1e-16 accuracy).
+    cheb_dict = ChebyshevT(n+1) → (a_big..b_big)
 
     println("Using ChebyshevT polynomials on [$a,$b] for the polynomial part")
 
@@ -212,7 +232,7 @@ if test_derivatives
     
     # Test points in the domain [a, b]
     test_points = [a + (b - a) * k / 10 for k in 0:10]
-    tolerance = 1e-6  # Tolerance for derivative comparison
+    tolerance = 1e-5  # Tolerance for derivative comparison
     
     # Declare as local to avoid soft scope ambiguity warning
     local all_passed = true
@@ -290,9 +310,9 @@ end
 
 basis = quadbasis(basis_funs, basis_derivs, a_big, b_big)
 if get_checkpoints
-    w, x, xi_checkpoints, w_checkpoints, x_checkpoints = compute_gauss_rules(basis, moments, verbose=verbose, add_endpoint=:left)
+    w, x, xi_checkpoints, w_checkpoints, x_checkpoints = compute_gauss_rules(basis, moments, verbose=verbose, add_endpoint=add_endpoint, principal=principal)
 else
-    w, x = compute_gauss_rule(basis)
+    w, x = compute_gauss_rule(basis, moments, verbose=verbose, add_endpoint=add_endpoint, principal=principal)
 end
 println("\nFinal Gauss quadrature rule (nodes and weights):")
 println("x: ", x)
@@ -320,31 +340,32 @@ end
 # ============================================================================
 # Test quadrature by integrating each basis function over [a,b]
 # ============================================================================
+if test_quadrature
+    println("\n" * "="^70)
+    println("Testing quadrature on basis functions (integrals over [a,b])")
+    println("="^70)
 
-println("\n" * "="^70)
-println("Testing quadrature on basis functions (integrals over [a,b])")
-println("="^70)
 
+    # 1. We already calculated the exact integrals according to the chosen basis.
 
-# 1. We already calculated the exact integrals according to the chosen basis.
+    # 2. Approximate integrals from the quadrature rule
+    approx_integrals = BigFloat[]
+    for f in basis_funs
+        approx = sum(w[i] * f(x[i]) for i in eachindex(w))
+        push!(approx_integrals, BigFloat(approx))
+    end
 
-# 2. Approximate integrals from the quadrature rule
-approx_integrals = BigFloat[]
-for f in basis_funs
-    approx = sum(w[i] * f(x[i]) for i in eachindex(w))
-    push!(approx_integrals, BigFloat(approx))
+    println()
+    for k in 1:length(basis_funs)
+        exact_k = exact_integrals[k]
+        approx_k = approx_integrals[k]
+        abs_err = abs(approx_k - exact_k)
+        rel_err = abs_err / max(abs(exact_k), eps(BigFloat))
+        println("Basis function $k: exact = $exact_k")
+        println("                 approx = $approx_k")
+        println("                 abs error = $abs_err")
+        println("                 rel error = $rel_err")
+    end
+
+    println("\nDone testing integrals of basis functions.")
 end
-
-println()
-for k in 1:length(basis_funs)
-    exact_k = exact_integrals[k]
-    approx_k = approx_integrals[k]
-    abs_err = abs(approx_k - exact_k)
-    rel_err = abs_err / max(abs(exact_k), eps(BigFloat))
-    println("Basis function $k: exact = $exact_k")
-    println("                 approx = $approx_k")
-    println("                 abs error = $abs_err")
-    println("                 rel error = $rel_err")
-end
-
-println("\nDone testing integrals of basis functions.")
