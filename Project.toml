@@ -1,7 +1,7 @@
 name = "GeneralizedGauss"
 uuid = "05e31603-d96d-5828-bb71-68ab99de2396"
-authors = ["Daan <daan.huybrechs@kuleuven.be>"]
-version = "0.0.1"
+version = "0.1.0"
+authors = ["Daan <daan.huybrechs@kuleuven.be>", "Alex <alex.bercik@mail.utoronto.ca>"]
 
 [deps]
 BasisFunctions = "4343a256-5453-507d-8aad-01a9d7189916"
