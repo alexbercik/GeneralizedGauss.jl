@@ -7,7 +7,8 @@ import BasisFunctions: moment
 export quadbasis,
     compute_moments,
     compute_gauss_rule,
-    compute_gauss_rules
+    compute_gauss_rules,
+    orthogonalize_basis
 
 import Base:
     eltype,
@@ -15,10 +16,9 @@ import Base:
     size
 
 include("basis.jl")
+include("orthogonalization.jl")
 include("quadrule.jl")
 include("representations.jl")
 include("gengauss.jl")
-
-include("polynomial/legendre.jl")
 
 end # module

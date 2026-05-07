@@ -356,7 +356,7 @@ function estimate_upper_canonical_representation(dict, moments, a, b, w0, x0, n;
         if verbose && !ismonotonic(Fvals_sweep)
             println("Upper canonical: function Fk is not monotonic along $(dir) sweep but should be.")
         end
-        @assert ismonotonic(Fvals_sweep) "Upper canonical Fk sweep $(dir) should be monotonic."
+        @assert ismonotonic(Fvals_sweep) "Upper canonical Fk sweep $(dir) should be monotonic.\nFvals_sweep = $(Fvals_sweep)\npts = $(pts2)\nIf the above Fvals are close to monotonic, this may indicate insufficient\nBigFloat precision for the current basis and degree.\nConsider increasing extra_digits or using a better-conditioned basis (e.g. Chebyshev).\nIf they are very bad, this may indicate something wrong with the basis or the moments."
         if switches_sign(Fvals_sweep)
             if first(Fvals_sweep) > 0
                 I = findlast(Fvals_sweep .> 0)
@@ -449,14 +449,16 @@ function compute_lower_canonical_representation(dict, moments, xi, w0, x0;
 end
 
 function compute_many_lower_canonical_representation(dict, moments, w0, x0, pts;
-        verbose=false, config::GaussRuleConfig=GaussRuleConfig(), options...)
+        verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
+        sweep_direction::Union{Symbol,Nothing}=nothing, options...)
     
     n = length(pts)
     T = eltype(w0)
     w = zeros(T,length(w0),n)
     x = zeros(T,length(w0),n)
     hasconverged = zeros(Bool,n)
-    order = sweep_indices(n, get_direction(config))
+    dir = sweep_direction !== nothing ? sweep_direction : get_direction(config)
+    order = sweep_indices(n, dir)
     prev_idx = nothing
     _gengauss_debug_println("w0: ", w0)
     _gengauss_debug_println("x0: ", x0)
@@ -487,7 +489,8 @@ function compute_many_lower_canonical_representation(dict, moments, w0, x0, pts;
 end
 
 function estimate_lower_canonical_representation(dict, moments, a, b, w0, x0;
-        verbose = false, config::GaussRuleConfig=GaussRuleConfig(), options...)
+        verbose = false, config::GaussRuleConfig=GaussRuleConfig(),
+        sweep_direction::Union{Symbol,Nothing}=nothing, options...)
     @assert length(dict) == length(moments)
     l = length(dict) >> 1
     #@assert length(w0) == l
@@ -495,28 +498,34 @@ function estimate_lower_canonical_representation(dict, moments, a, b, w0, x0;
 
     verbose && println("Estimating lower canonical representation, xi between $(a) and $(b)")
     n = 8
-    estimate_lower_canonical_representation(dict, moments, a, b, w0, x0, n; verbose, config, options...)
+    estimate_lower_canonical_representation(dict, moments, a, b, w0, x0, n;
+        verbose, config, sweep_direction, options...)
 end
 
 function estimate_lower_canonical_representation(dict, moments, a, b, w0, x0, n;
-        verbose=false, config::GaussRuleConfig=GaussRuleConfig(), options...)
+        verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
+        sweep_direction::Union{Symbol,Nothing}=nothing, options...)
     @assert n <= 1024
+
+    dir = sweep_direction !== nothing ? sweep_direction : get_direction(config)
 
     pts = collect(range(a, b, length=n+2)[2:end-1])
     # end_seed will be computed from refine_interval_from_sweep results if needed
     end_seed = nothing
-    someconverged, w, x, pts2 = compute_many_lower_canonical_representation(dict[1:end-1], moments[1:end-1], w0, x0, pts; verbose, config, options...)
+    someconverged, w, x, pts2 = compute_many_lower_canonical_representation(
+        dict[1:end-1], moments[1:end-1], w0, x0, pts;
+        verbose, config, sweep_direction, options...)
     if someconverged
         if verbose && length(pts2)<length(pts)
             println("Lower canonical: converged for $(length(pts2)) out of $(length(pts)) points")
         end
         Fvals = [Fk(w[:,i],x[:,i],dict[end], moments[end]) for i in 1:size(w,2)]
-        order = sweep_indices(length(Fvals), get_direction(config))
+        order = sweep_indices(length(Fvals), dir)
         Fvals_sweep = Fvals[order]
         if verbose && !ismonotonic(Fvals_sweep)
-            println("Lower canonical: function Fk is not monotonic along $(get_direction(config)) sweep but should be.")
+            println("Lower canonical: function Fk is not monotonic along $(dir) sweep but should be.")
         end
-        @assert ismonotonic(Fvals_sweep) "Lower canonical Fk sweep $(get_direction(config)) should be monotonic.\nFvals_sweep = $(Fvals_sweep)\npts = $(pts2)\nThis may indicate insufficient BigFloat precision for the current basis and degree.\nConsider increasing extra_digits or using a better-conditioned basis (e.g. Chebyshev)."
+        @assert ismonotonic(Fvals_sweep) "Lower canonical Fk sweep $(dir) should be monotonic.\nFvals_sweep = $(Fvals_sweep)\npts = $(pts2)\nIf the above Fvals are close to monotonic, this may indicate insufficient\nBigFloat precision for the current basis and degree.\nConsider increasing extra_digits or using a better-conditioned basis (e.g. Chebyshev).\nIf they are very bad, this may indicate something wrong with the basis or the moments."
         if switches_sign(Fvals_sweep)
             _gengauss_debug_println("DEBUG: Detected sign change in lower canonical")
             if first(Fvals_sweep) > 0
@@ -531,16 +540,23 @@ function estimate_lower_canonical_representation(dict, moments, a, b, w0, x0, n;
         else
             _gengauss_debug_println("DEBUG: No sign change detected, refining interval")
             a_new, b_new, wa_new, xa_new, wb_new, xb_new =
-                refine_interval_from_sweep(a, b, pts2, w, x, order, Fvals_sweep, get_direction(config), (w0, x0), end_seed)
-            verbose && println("Lower canonical: refining from $((a,b)) to $((a_new,b_new)) in direction $(get_direction(config))")
+                refine_interval_from_sweep(a, b, pts2, w, x, order, Fvals_sweep, dir, (w0, x0), end_seed)
+            verbose && println("Lower canonical: refining from $((a,b)) to $((a_new,b_new)) in direction $(dir)")
             # Select the appropriate boundary based on add_endpoint
-            w0_new = config.add_endpoint == :left ? wa_new : wb_new
-            x0_new = config.add_endpoint == :left ? xa_new : xb_new
-            estimate_lower_canonical_representation(dict, moments, a_new, b_new, w0_new, x0_new, 8; verbose, config, options...)
+            if sweep_direction !== nothing
+                w0_new = dir == :left_to_right ? wa_new : wb_new
+                x0_new = dir == :left_to_right ? xa_new : xb_new
+            else
+                w0_new = config.add_endpoint == :left ? wa_new : wb_new
+                x0_new = config.add_endpoint == :left ? xa_new : xb_new
+            end
+            estimate_lower_canonical_representation(dict, moments, a_new, b_new, w0_new, x0_new, 8;
+                verbose, config, sweep_direction, options...)
         end
     else
         verbose && println("Lower canonical: no convergence on grid, increasing to n=$(2n)")
-        estimate_lower_canonical_representation(dict, moments, a, b, w0, x0, 2n; verbose, config, options...)
+        estimate_lower_canonical_representation(dict, moments, a, b, w0, x0, 2n;
+            verbose, config, sweep_direction, options...)
     end
 end
 
