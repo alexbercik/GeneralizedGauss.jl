@@ -3,7 +3,7 @@ using BasisFunctions
 using GeneralizedGauss
 using LinearAlgebra
 
-import GeneralizedGauss: funeval, funeval_deriv, gauss_legendre
+import GeneralizedGauss: funeval, funeval_deriv, gauss_legendre, maybe_funeval_deriv
 
 # ============================================================================
 # Helpers
@@ -41,6 +41,16 @@ function verify_orthonormality(basis, a, b; measure=nothing, quad_order=120)
                        for k in 1:quad_order)
     end
     G
+end
+
+"""Analytic derivatives (orders `1:num_orders`) of `x ↦ x^d`; higher orders evaluate to zero."""
+function monomial_higher_derivative_spec(d::Int, num_orders::Int)
+    [let mo = mo
+         mo > d ? (x -> zero(BigFloat)) :
+         let c = prod(BigFloat(ℓ) for ℓ in (d - mo + 1):d)
+             x -> c * x^BigFloat(d - mo)
+         end
+     end for mo in 1:num_orders]
 end
 
 
@@ -243,6 +253,32 @@ end
 
     @testset "No derivatives in output" begin
         @test orth_basis.fun_derivs === nothing
+    end
+end
+
+@testset "Orthogonalization: higher derivatives use same T as basis functions" begin
+    setprecision(BigFloat, 256)
+
+    N = 5
+    a = BigFloat(0)
+    b = BigFloat(1)
+
+    funs = [x -> x^k for k in 0:N-1]
+    fun_deriv_specs = [monomial_higher_derivative_spec(k, N) for k in 0:N-1]
+    basis = quadbasis(funs, fun_deriv_specs, a, b)
+
+    orth_basis, T_mat = orthogonalize_basis(basis)
+
+    @test orth_basis.fun_derivs !== nothing
+    @test length(first(orth_basis.fun_derivs)) == N
+
+    test_pts = [BigFloat("0.11"), BigFloat("0.37"), BigFloat("0.83")]
+    tol = BigFloat(10)^(-18)
+
+    for x0 in test_pts, i in 1:N, mo in 1:N
+        ref = sum(j -> T_mat[i, j] * maybe_funeval_deriv(basis, j, x0, mo), 1:i)
+        got = BasisFunctions.unsafe_eval_element_derivative(orth_basis, i, x0, mo)
+        @test abs(ref - got) < tol
     end
 end
 

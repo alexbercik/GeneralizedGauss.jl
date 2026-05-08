@@ -8,16 +8,19 @@ BasisFunctions = "4343a256-5453-507d-8aad-01a9d7189916"
 DomainSets = "5b8099bc-c8ec-5219-889f-1d9e522a28bf"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 NLsolve = "2774e3e8-f4cf-5e23-947b-6d7e65073b56"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 
 [compat]
 BasisFunctions = "0.7"
 DomainSets = "0.7"
 LinearAlgebra = "1"
 NLsolve = "4.5.1"
+Random = "1"
 julia = "1.9"
 
 [extras]
+Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["Test"]
+test = ["Test", "Printf"]

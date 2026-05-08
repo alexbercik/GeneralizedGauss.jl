@@ -383,3 +383,141 @@ w, x, xi_checkpoints, w_checkpoints, x_checkpoints =
 
 This returns the final rule together with the sequence of intermediate principal
 representations encountered during continuation.
+
+## 8) Diagnostic checks for Chebyshev systems
+
+The package includes two numerical diagnostics for checking whether a basis has
+the Chebyshev properties needed by the generalized Gaussian quadrature
+construction.
+
+### T-system / E-system diagnostic
+
+Use `check_T_system` to test the ordinary Chebyshev-system property directly.
+This is the current public name for the T-system diagnostic. It samples ordered
+interpolation tuples
+`x_1 < x_2 < ... < x_m` and checks whether the normalized collocation
+determinant
+
+```julia
+det(A) / prod(xs[j] - xs[i] for j in 2:m for i in 1:j-1)
+```
+
+keeps a fixed nonzero sign. The normalization removes the artificial
+Vandermonde smallness that appears when interpolation nodes are close together.
+
+```julia
+result = check_T_system(basis; num_tuples=5000, tuple_size=length(basis),
+                        verbose=true)
+```
+
+Useful keyword arguments:
+- `num_tuples`: number of ordered tuples to sample.
+- `tuple_size`: number of initial basis functions to test. If this is smaller
+  than `length(basis)`, only the prefix `basis[1:tuple_size]` is checked.
+- `verbose`: print a structured diagnostic summary.
+- `rng`: random number generator used for randomized tuples.
+- `near_zero_rel_tol`: relative threshold for flagging near-zero normalized
+  determinants.
+
+This is a numerical diagnostic, not a proof. A sign change or near-zero
+determinant is strong evidence against the Chebyshev-system property. Passing the test is evidence in favor of the property, but not a guarantee.
+
+### ECT-system diagnostic
+
+Use `check_ECT_system` for the stronger extended complete Chebyshev-system
+diagnostic. It checks all leading Wronskians
+`W(f_1, ..., f_k)`, `k = 1, ..., length(basis)`, on the interval.
+
+```julia
+result = check_ECT_system(basis; n_points=200, verbose=true)
+```
+
+Useful keyword arguments:
+- `n_points`: number of Chebyshev sample points used for the Wronskian checks.
+- `verbose`: print a structured table of per-Wronskian diagnostics.
+
+The returned object reports both `sampled_constant_sign` and `is_ect`.
+`sampled_constant_sign` means all sampled Wronskians had constant sign.
+`is_ect` is more conservative: it is true only when the Lipschitz certificate
+also rules out zero crossings between sample points.
+
+If analytic derivatives are unavailable, `check_ECT_system` recovers missing
+orders numerically using Chebyshev interpolation or local Taylor arithmetic.
+When this happens, the result should be interpreted as a numerical diagnostic.
+
+### Providing analytic derivatives
+
+For a custom basis, pass derivative information as the second argument to
+`quadbasis`:
+
+```julia
+basis = quadbasis(funs, fun_derivs, a, b)
+```
+
+The simple form already introduced above is one first-derivative function per
+basis function (what is needed for `compute_gauss_rule`):
+
+```julia
+funs = [
+    x -> one(x),
+    x -> x,
+    x -> x^2,
+]
+
+fun_derivs = [
+    x -> zero(x),  # f_1'
+    x -> one(x),   # f_2'
+    x -> 2x,       # f_3'
+]
+
+basis = quadbasis(funs, fun_derivs, BigFloat(0), BigFloat(1))
+```
+
+To provide higher derivatives, make each `fun_derivs[i]` a vector or tuple.
+Entry `m` should evaluate the `m`-th derivative of `f_i`:
+
+```julia
+funs = [
+    x -> one(x),
+    x -> x,
+    x -> sqrt(x),
+]
+
+fun_derivs = [
+    [
+        x -> zero(x),  # f_1'
+        x -> zero(x),  # f_1''
+        x -> zero(x),  # f_1'''
+    ],
+    [
+        x -> one(x),   # f_2'
+        x -> zero(x),  # f_2''
+        x -> zero(x),  # f_2'''
+    ],
+    [
+        x -> inv(2 * sqrt(x)),               # f_3'
+        x -> -inv(4 * x^(BigFloat(3) / 2)),  # f_3''
+        x -> 3 / (8 * x^(BigFloat(5) / 2)),  # f_3'''
+    ],
+]
+
+basis = quadbasis(funs, fun_derivs, BigFloat(0), BigFloat(1))
+```
+
+You can omit individual derivative orders by using `nothing`:
+
+```julia
+fun_derivs = [
+    [
+        x -> 4x^3,  # f'
+        nothing,    # f'' unavailable
+        x -> 24x,   # f''' available
+    ],
+]
+```
+
+`check_ECT_system` uses every analytic derivative it can find. For an
+`n`-function basis, the Wronskians require derivatives through order `n - 1`;
+the certification step may use order `n`. Missing orders are approximated
+numerically, preferably from the highest available lower-order analytic
+derivative.

@@ -1,6 +1,6 @@
 module GeneralizedGauss
 
-using BasisFunctions, LinearAlgebra, NLsolve
+using BasisFunctions, LinearAlgebra, NLsolve, Random
 
 import BasisFunctions: moment
 
@@ -8,7 +8,9 @@ export quadbasis,
     compute_moments,
     compute_gauss_rule,
     compute_gauss_rules,
-    orthogonalize_basis
+    orthogonalize_basis,
+    check_ECT_system,
+    check_T_system
 
 import Base:
     eltype,
@@ -17,6 +19,7 @@ import Base:
 
 include("basis.jl")
 include("orthogonalization.jl")
+include("basis_checks.jl")
 include("quadrule.jl")
 include("representations.jl")
 include("gengauss.jl")

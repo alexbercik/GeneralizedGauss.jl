@@ -253,10 +253,21 @@ function orthogonalize_basis(basis::Dictionary; measure=nothing, quad_order=noth
 
     # Build transformed derivatives: ψ'_i(x) = Σ_{j=1}^{i} T_mat[i,j] φ'_j(x)
     # (skip when the original basis has no derivative information)
-    has_derivs = !(basis isa GenericFunctionSet && basis.fun_derivs === nothing)
+    x_probe = (a + b) / 2
+    max_deriv_order = 0
+    while max_deriv_order < n &&
+          all(i -> maybe_funeval_deriv(basis, i, x_probe, max_deriv_order + 1) !== nothing,
+              1:n)
+        max_deriv_order += 1
+    end
+
+    has_derivs = max_deriv_order >= 1
     new_derivs = if has_derivs
         [let coeffs = T_mat[i, 1:i]
-            x -> sum(coeffs[j] * funeval_deriv(basis, j, x) for j in 1:length(coeffs))
+            [let order = order
+                x -> sum(coeffs[j] * maybe_funeval_deriv(basis, j, x, order)
+                         for j in 1:length(coeffs))
+             end for order in 1:max_deriv_order]
         end for i in 1:n]
     else
         nothing

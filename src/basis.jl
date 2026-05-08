@@ -32,9 +32,32 @@ Base.size(dict::GenericFunctionSet) = (length(dict.funs),)
 BasisFunctions.support(dict::GenericFunctionSet) = dict.a..dict.b
 
 BasisFunctions.unsafe_eval_element(basis::GenericFunctionSet, i, x) = basis.funs[i](x)
+
+_has_derivative_order(::Nothing, order::Int) = false
+_has_derivative_order(::Function, order::Int) = order == 1
+function _has_derivative_order(spec::Union{AbstractVector,Tuple}, order::Int)
+    1 <= order <= length(spec) || return false
+    spec[order] !== nothing
+end
+
+_eval_derivative_spec(::Nothing, x, order::Int) = nothing
+_eval_derivative_spec(spec::Function, x, order::Int) =
+    order == 1 ? spec(x) : nothing
+function _eval_derivative_spec(spec::Union{AbstractVector,Tuple}, x, order::Int)
+    _has_derivative_order(spec, order) || return nothing
+    spec[order](x)
+end
+
+function maybe_funeval_deriv(basis::GenericFunctionSet, i, x, order::Int)
+    basis.fun_derivs === nothing && return nothing
+    _eval_derivative_spec(basis.fun_derivs[i], x, order)
+end
+
 function BasisFunctions.unsafe_eval_element_derivative(basis::GenericFunctionSet, i, x, order)
-    @assert order == 1
-    basis.fun_derivs[i](x)
+    deriv = maybe_funeval_deriv(basis, i, x, order)
+    deriv === nothing &&
+        throw(ArgumentError("No analytic derivative of order $order for basis function $i"))
+    deriv
 end
 
 
@@ -56,3 +79,15 @@ funeval(basis::Dictionary, i, x) =
     BasisFunctions.unsafe_eval_element(basis, i, x)
 funeval_deriv(basis::Dictionary, i, x) =
     BasisFunctions.unsafe_eval_element_derivative(basis, i, x, 1)
+
+function maybe_funeval_deriv(basis::Dictionary, i, x, order::Int)
+    try
+        BasisFunctions.unsafe_eval_element_derivative(basis, i, x, order)
+    catch e
+        if e isa MethodError || e isa ArgumentError ||
+           e isa AssertionError || e isa ErrorException
+            return nothing
+        end
+        rethrow(e)
+    end
+end
