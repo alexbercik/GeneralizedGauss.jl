@@ -10,7 +10,8 @@ export quadbasis,
     compute_gauss_rules,
     orthogonalize_basis,
     check_ECT_system,
-    check_T_system
+    check_T_system,
+    gauss_legendre
 
 import Base:
     eltype,
