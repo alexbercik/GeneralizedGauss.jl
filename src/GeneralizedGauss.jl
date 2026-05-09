@@ -2,7 +2,7 @@ module GeneralizedGauss
 
 using BasisFunctions, LinearAlgebra, NLsolve, Random
 
-import BasisFunctions: moment
+import BasisFunctions: dict_moment
 
 export quadbasis,
     compute_moments,

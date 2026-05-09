@@ -192,7 +192,7 @@ just the final call to `compute_gauss_rule`. See the following example:
 using BasisFunctions, DomainSets, GeneralizedGauss
 import GeneralizedGauss: solver_tolerance
 
-newton_tol_digits = 30 # digits of precision for Newton solves 
+newton_tol_digits = 30 # digits of precision for Newton solves (optional)
 extra_digits = 10 # additional digits of precision to work in
 
 total_digits = newton_tol_digits + extra_digits # total precision 
@@ -229,7 +229,7 @@ Practical notes:
   You can orthogonalize your basis with `orthogonalize_basis` (see above),
   which preserves the `BigFloat` precision.
 
-By default, `GeneralizedGauss` uses `sqrt(eps(BigFloat))` as the Newton solver
+By default, `GeneralizedGauss` uses `eps(BigFloat)` as the Newton solver
 tolerance, so overriding `solver_tolerance(::Type{BigFloat})` is optional.
 
 ## 7) Examples

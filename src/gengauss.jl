@@ -64,12 +64,12 @@ default_threshold(dict::Dictionary) = default_threshold(codomaintype(dict))
 default_threshold(::Type{T}) where {T <: AbstractFloat} = sqrt(eps(T))/100
 default_threshold(::Type{BigFloat}) = BigFloat(10)^(-20)
 
-solver_tolerance(::Type{Float64}) = 1e-8
-solver_tolerance(::Type{T}) where {T} = sqrt(eps(T))
-# For BigFloat, use sqrt(eps) which adapts to the current precision setting.
-# (The previous hardcoded 1e-30 was unachievable when basis functions are
-# evaluated in Float64 precision, e.g. via ChebyshevT closures.)
-solver_tolerance(::Type{BigFloat}) = sqrt(eps(BigFloat))
+solver_tolerance(::Type{Float64}) = eps(Float64)#^(3/4)
+solver_tolerance(::Type{T}) where {T} = eps(T)#^(3/4)
+# For BigFloat, use full machine epsilon so the Newton solve converges to
+# the precision set by `setprecision(BigFloat, ...)`.  The extra iterations
+# are negligible for the small systems arising in quadrature construction.
+solver_tolerance(::Type{BigFloat}) = eps(BigFloat)
 
 struct RepresentationStep
     branch::Symbol

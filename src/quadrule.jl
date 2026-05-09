@@ -1,9 +1,9 @@
 
 function compute_moments(basis::Dictionary; measure = nothing)
     if isnothing(measure)
-        [moment(basis, i) for i in eachindex(basis)]
+        [dict_moment(basis, i) for i in eachindex(basis)]
     else
-        [moment(basis, i; measure=measure) for i in eachindex(basis)]
+        [dict_moment(basis, i; measure=measure) for i in eachindex(basis)]
     end
 end
 
