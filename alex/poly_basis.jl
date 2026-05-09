@@ -1,17 +1,3 @@
-# Load Revise for automatic module reloading during development
-# using Pkg
-# try
-#     using Revise
-# catch
-#     Pkg.add("Revise")
-#     using Revise
-# end
-
-# Activate project and load dependencies
-project_root = "/Users/alex/Library/CloudStorage/OneDrive-UniversityofToronto/UTIAS/Other_Peoples_Things/GeneralizedGauss.jl"
-Pkg.activate(project_root)
-Pkg.instantiate()
-
 using BasisFunctions, DomainSets, LinearAlgebra, NLsolve
 
 if "--debug" in ARGS
@@ -19,20 +5,7 @@ if "--debug" in ARGS
     filter!(!=("--debug"), ARGS)  # optional: hide it from downstream ArgParse / logic
 end
 
-# Load GeneralizedGauss from source using includet (bypasses package system)
-original_dir = pwd()
-cd(joinpath(project_root, "src"))
-try
-    if isdefined(Main, :includet)
-        includet(joinpath(project_root, "src", "GeneralizedGauss.jl"))
-    else
-        include(joinpath(project_root, "src", "GeneralizedGauss.jl"))
-    end
-finally
-    cd(original_dir)
-end
-
-using .GeneralizedGauss: quadbasis, compute_moments, compute_gauss_rule, compute_gauss_rules
+using GeneralizedGauss: quadbasis, compute_moments, compute_gauss_rule, compute_gauss_rules
 
 # ============================================================================
 # Configuration options

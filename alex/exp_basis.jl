@@ -1,9 +1,3 @@
-# Activate the appropriate project
-using Pkg
-io = stderr #devnull
-Pkg.activate(joinpath(homedir(), "julia_environments", "generalized_gauss"); io=io)
-Pkg.add(path="/Users/alex/Library/CloudStorage/OneDrive-UniversityofToronto/UTIAS/Other_Peoples_Things/GeneralizedGauss.jl")
-Pkg.instantiate()
 using BasisFunctions, DomainSets, GeneralizedGauss
 
 # ============================================================================
@@ -11,7 +5,7 @@ using BasisFunctions, DomainSets, GeneralizedGauss
 # ============================================================================
 
 # Number of polynomial basis functions (degree n means we use polynomials up to degree n)
-n = 3
+n = 4
 
 # Option to use Chebyshev polynomials instead of monomials for better conditioning
 # Chebyshev polynomials are orthogonal on [-1,1], which helps with numerical stability
@@ -27,7 +21,7 @@ a = 0.0
 b = 1.0
 
 # tolerance of the Newton solver: 10^(-newton_digits)
-newton_tol_digits = 8
+newton_tol_digits = 20
 
 # How many extra digits to add to the BigFloat precision?
 # total precision = newton_tol_digits + extra_digits
