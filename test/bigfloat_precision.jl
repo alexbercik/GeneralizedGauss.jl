@@ -79,7 +79,7 @@ Build a BigFloat monomial basis on [a, b] with derivatives.
 """
 function bigfloat_monomial_basis(N, a::BigFloat, b::BigFloat)
     funs = [x -> x^k for k in 0:N-1]
-    fun_derivs = vcat([x -> one(x)], [x -> BigFloat(k) * x^(k-1) for k in 1:N-1])
+    fun_derivs = vcat([x -> zero(x)], [x -> BigFloat(k) * x^(k - 1) for k in 1:N-1])
     quadbasis(funs, fun_derivs, a, b)
 end
 
@@ -190,6 +190,24 @@ try
             end
             println("  └───────┴──────────────────────┴──────────────────────┴─────────┘")
         end
+
+        @testset "Manual monomial quadbasis: compute_moments (Lebesgue) on [-1, 1]" begin
+            basis = bigfloat_monomial_basis(N, a, b)
+            auto_moments = compute_moments(basis)
+            exact = exact_monomial_moments(N, a, b)
+
+            println("\n  Manual monomial moments on [-1,1] (Lebesgue, automatic):")
+            println("  ┌───────┬──────────────────────┬──────────────────────┬─────────┐")
+            println("  │   k   │    compute_moments    │       exact          │  digits │")
+            println("  ├───────┼──────────────────────┼──────────────────────┼─────────┤")
+            for k in 1:N
+                d = digits_of_agreement(auto_moments[k], exact[k])
+                println("  │  $(lpad(k-1, 3)) │ $(fmt_table_value(auto_moments[k])) │ " *
+                        "$(fmt_table_value(exact[k])) │ $(fmt_table_digits(d)) │")
+                @test d > 14
+            end
+            println("  └───────┴──────────────────────┴──────────────────────┴─────────┘")
+        end
     end
 
     # -----------------------------------------------------------------------
@@ -257,9 +275,78 @@ try
     end
 
     # -----------------------------------------------------------------------
+    # 3.5 GL rule from raw monomial basis (automatic moments)
+    # -----------------------------------------------------------------------
+    # The Vandermonde / raw monomial moment system is severely ill-conditioned
+    # for larger n even in BigFloat; n ≤ 3 remains well-conditioned here.
+    @testset verbose=true "GL rule from raw monomial basis" begin
+        println("\n  GL rules from raw monomial quadbasis (automatic moments), [-1,1]:")
+        println("  ┌────────────┬───────────────┬────────────────┐")
+        println("  │    rule    │  node digits  │ weight digits   │")
+        println("  ├────────────┼───────────────┼────────────────┤")
+
+        for n_rule in [2, 3]
+            N_basis = 2 * n_rule
+            a, b = BigFloat(-1), BigFloat(1)
+            mono_basis = bigfloat_monomial_basis(N_basis, a, b)
+
+            w, x = compute_gauss_rule(mono_basis)
+            x_ref, w_ref = reference_gl(n_rule, BigFloat)
+
+            dx = digits_of_agreement_vec(x, x_ref)
+            dw = digits_of_agreement_vec(w, w_ref)
+            println("  │ $(lpad(n_rule, 3))-pt GL  │  $(lpad(round(dx, digits=1), 11)) │  $(lpad(round(dw, digits=1), 12))  │")
+
+            @testset "$(n_rule)-point GL from raw monomials ($(N_basis)), auto moments" begin
+                @test length(w) == n_rule
+                @test length(x) == n_rule
+                @test dx > NEWTON_DIGITS - 15
+                @test dw > NEWTON_DIGITS - 15
+            end
+        end
+        println("  └────────────┴───────────────┴────────────────┘")
+    end
+
+    # -----------------------------------------------------------------------
+    # 3.6 Raw monomial GL on [0, 1] (diagnostic — poor match vs mapped GL)
+    # -----------------------------------------------------------------------
+    # Keep n_rule ≤ 3: larger rules can make estimate_*_canonical_representation
+    # exhaust the adaptive grid (n → 2048) and fail after hours without converged samples.
+    @testset verbose=true "GL from raw monomial quadbasis on [0, 1] (diagnostic)" begin
+        a, b = BigFloat(0), BigFloat(1)
+        println("\n  Raw monomial quadbasis on [0,1] vs affine-mapped GL (automatic moments).")
+        println("  ┌────────────┬───────────────┬────────────────┐")
+        println("  │    rule    │  node digits  │ weight digits   │")
+        println("  ├────────────┼───────────────┼────────────────┤")
+
+        for n_rule in [2, 3]
+            N_basis = 2 * n_rule
+            mono_basis = bigfloat_monomial_basis(N_basis, a, b)
+
+            w, x = compute_gauss_rule(mono_basis)
+            x_ref, w_ref = reference_gl_mapped(n_rule, a, b)
+
+            p = sortperm(x)
+            pr = sortperm(x_ref)
+            x_s, w_s = x[p], w[p]
+            x_rs, w_rs = x_ref[pr], w_ref[pr]
+
+            dx = digits_of_agreement_vec(x_s, x_rs)
+            dw = digits_of_agreement_vec(w_s, w_rs)
+            println("  │ $(lpad(n_rule, 3))-pt GL  │  $(lpad(round(dx, digits=1), 11)) │  $(lpad(round(dw, digits=1), 12))  │")
+
+            @testset "$(n_rule)-point raw monomial on [0,1] (diagnostic only)" begin
+                @test length(w) == n_rule
+                @test length(x) == n_rule
+            end
+        end
+        println("  └────────────┴───────────────┴────────────────┘")
+    end
+
+    # -----------------------------------------------------------------------
     # 4. GL rule from orthogonalized monomials (exact moments)
     # -----------------------------------------------------------------------
-    @testset verbose=true "GL rule from orthogonalized monomials" begin
+    @testset verbose=true "GL rule from orthogonalized monomials (exact moments)" begin
         println("\n  GL rules from orthogonalized monomials (exact moments):")
         println("  ┌────────────┬───────────────┬────────────────┐")
         println("  │    rule    │  node digits  │ weight digits   │")
@@ -282,7 +369,7 @@ try
             dw = digits_of_agreement_vec(w, w_ref)
             println("  │ $(lpad(n_rule, 3))-pt GL  │  $(lpad(round(dx, digits=1), 11)) │  $(lpad(round(dw, digits=1), 12))  │")
 
-            @testset "$(n_rule)-point GL from orth. monomials ($(N_basis))" begin
+            @testset "$(n_rule)-point GL from orth. monomials ($(N_basis)), exact moments" begin
                 @test length(w) == n_rule
                 @test length(x) == n_rule
                 #@info "$(n_rule)-pt GL from orth. monomials: nodes ≈ $(round(dx, digits=1)) digits, weights ≈ $(round(dw, digits=1)) digits"
@@ -296,7 +383,7 @@ try
     # -----------------------------------------------------------------------
     # 4.1 GL rule from orthogonalized monomials (automatic moments)
     # -----------------------------------------------------------------------
-    @testset verbose=true "GL rule from orthogonalized monomials" begin
+    @testset verbose=true "GL rule from orthogonalized monomials (automatic moments)" begin
         println("\n  GL rules from orthogonalized monomials (automatic moments):")
         println("  ┌────────────┬───────────────┬────────────────┐")
         println("  │    rule    │  node digits  │ weight digits   │")
@@ -317,7 +404,7 @@ try
             dw = digits_of_agreement_vec(w, w_ref)
             println("  │ $(lpad(n_rule, 3))-pt GL  │  $(lpad(round(dx, digits=1), 11)) │  $(lpad(round(dw, digits=1), 12))  │")
 
-            @testset "$(n_rule)-point GL from orth. monomials ($(N_basis))" begin
+            @testset "$(n_rule)-point GL from orth. monomials ($(N_basis)), auto moments" begin
                 @test length(w) == n_rule
                 @test length(x) == n_rule
                 #@info "$(n_rule)-pt GL from orth. monomials: nodes ≈ $(round(dx, digits=1)) digits, weights ≈ $(round(dw, digits=1)) digits"
@@ -364,7 +451,7 @@ try
             silent_check(dw > 14, "ChebyshevT [0,1]: weight digits < 14")
         end
 
-        @testset "Orthogonalized monomials on [0, 1]" begin
+        @testset "Orthogonalized monomials on [0, 1] (exact moments)" begin
             mono_basis = bigfloat_monomial_basis(N_basis, a, b)
             exact_mom = exact_monomial_moments(N_basis, a, b)
 
@@ -376,6 +463,18 @@ try
             dw = digits_of_agreement_vec(w, w_ref)
             println("  │ $(rpad("Orth. mono.(exact mom.)", 24)) │  $(lpad(round(dx, digits=1), 11)) │  $(lpad(round(dw, digits=1), 12))  │")
             #@info "Orth. monomials on [0,1]: nodes ≈ $(round(dx, digits=1)) digits, weights ≈ $(round(dw, digits=1)) digits"
+            @test dx > NEWTON_DIGITS - 15
+            @test dw > NEWTON_DIGITS - 15
+        end
+
+        @testset "Orthogonalized monomials on [0, 1] (automatic moments)" begin
+            mono_basis = bigfloat_monomial_basis(N_basis, a, b)
+
+            orth_basis, _T_mat = orthogonalize_basis(mono_basis)
+            w, x = compute_gauss_rule(orth_basis)
+            dx = digits_of_agreement_vec(x, x_ref)
+            dw = digits_of_agreement_vec(w, w_ref)
+            println("  │ $(rpad("Orth. mono.(auto mom.)", 24)) │  $(lpad(round(dx, digits=1), 11)) │  $(lpad(round(dw, digits=1), 12))  │")
             @test dx > NEWTON_DIGITS - 15
             @test dw > NEWTON_DIGITS - 15
         end

@@ -312,3 +312,15 @@ end
     @test x ≈ gl3_x_ref atol=BigFloat(10)^(-20)
     @test w ≈ gl3_w_ref atol=BigFloat(10)^(-20)
 end
+
+@testset "Ill-conditioned orthogonalization warning mentions downstream quadrature" begin
+    N = 8
+    a = 0.0
+    b = 1.0
+
+    funs = [x -> x^k for k in 0:N-1]
+    fun_derivs = vcat(x -> zero(x), [x -> k * x^(k-1) for k in 1:N-1])
+    basis = quadbasis(funs, fun_derivs, a, b)
+
+    @test_logs (:warn, r"compute_gauss_rule") orthogonalize_basis(basis)
+end
