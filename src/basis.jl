@@ -11,22 +11,36 @@ struct GenericFunctionSet{S,T,F,D} <: Dictionary{S,T}
     fun_derivs  ::  D
     a           ::  S
     b           ::  S
+    orthogonalization_digits_lost :: Float64
 
-    function GenericFunctionSet{S,T,F,D}(funs::F, fun_derivs::D, a, b) where {S,T,F,D}
+    function GenericFunctionSet{S,T,F,D}(funs::F, fun_derivs::D, a, b,
+            orthogonalization_digits_lost::Real=0.0) where {S,T,F,D}
         if fun_derivs != nothing
             @assert length(funs) == length(fun_derivs)
         end
-        new(funs, fun_derivs, a, b)
+        new(funs, fun_derivs, a, b, Float64(orthogonalization_digits_lost))
     end
 end
 
 GenericFunctionSet(funs, fun_derivs, a::S, b::T) where {S,T} =
     GenericFunctionSet(funs, fun_derivs, promote(a,b)...)
+GenericFunctionSet(funs, fun_derivs, a::S, b::T,
+        orthogonalization_digits_lost::Real) where {S,T} =
+    GenericFunctionSet(funs, fun_derivs, promote(a,b)...,
+        orthogonalization_digits_lost)
 GenericFunctionSet(funs, fun_derivs, a::T, b::T) where {T} =
     GenericFunctionSet{T,T}(funs, fun_derivs, a, b)
+GenericFunctionSet(funs, fun_derivs, a::T, b::T,
+        orthogonalization_digits_lost::Real) where {T} =
+    GenericFunctionSet{T,T}(funs, fun_derivs, a, b,
+        orthogonalization_digits_lost)
 
 GenericFunctionSet{S,T}(funs::F, fun_derivs::D, a, b) where {S,T,F,D} =
     GenericFunctionSet{S,T,F,D}(funs, fun_derivs, a, b)
+GenericFunctionSet{S,T}(funs::F, fun_derivs::D, a, b,
+        orthogonalization_digits_lost::Real) where {S,T,F,D} =
+    GenericFunctionSet{S,T,F,D}(funs, fun_derivs, a, b,
+        orthogonalization_digits_lost)
 
 Base.size(dict::GenericFunctionSet) = (length(dict.funs),)
 BasisFunctions.support(dict::GenericFunctionSet) = dict.a..dict.b
@@ -71,7 +85,8 @@ quadbasis(funs, fun_derivs, a, b) = GenericFunctionSet(funs, fun_derivs, a, b)
 Base.getindex(dict::GenericFunctionSet, I::AbstractUnitRange) =
     GenericFunctionSet(dict.funs[I],
                        dict.fun_derivs === nothing ? nothing : dict.fun_derivs[I],
-                       dict.a, dict.b)
+                       dict.a, dict.b,
+                       dict.orthogonalization_digits_lost)
 
 
 funeval(basis, i, x) = basis[i](x)

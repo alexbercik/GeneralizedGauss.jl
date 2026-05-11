@@ -211,32 +211,6 @@ function orthogonalize_basis(basis::Dictionary; measure=nothing, quad_order=noth
         end
     end
 
-    # --- Conditioning diagnostics ---
-    # cond(R⁻ᵀ) = cond(R) ≈ max(|R_ii|) / min(|R_ii|) for triangular R.
-    # This is the condition of the transformation, and equals sqrt(cond(G)),
-    # but computed without ever forming G.
-    diag_R = abs.(diag(R))
-    cond_T = maximum(diag_R) / minimum(diag_R)
-    digits_lost = log10(cond_T)
-    working_digits = precision(FT) * log10(FT(2))  # bits → decimal digits
-    reliable_digits = working_digits - digits_lost
-
-    if reliable_digits < 1
-        @warn("Basis is nearly linearly dependent: estimated " *
-              "$(round(Float64(digits_lost), digits=1)) digits lost " *
-              "(cond(R) ≈ 1e$(round(Int, Float64(digits_lost)))). " *
-              "The orthogonalized basis may have no reliable digits. " *
-              "Consider increasing BigFloat precision or using a " *
-              "better-conditioned basis.")
-    elseif digits_lost > working_digits / 3
-        @warn("Basis is ill-conditioned: estimated " *
-              "$(round(Float64(digits_lost), digits=1)) digits lost out of " *
-              "$(round(Int, Float64(working_digits))) available " *
-              "(cond(R) ≈ 1e$(round(Int, Float64(digits_lost)))). " *
-              "Approximately $(round(Int, Float64(reliable_digits))) " *
-              "reliable digits remain.")
-    end
-
     # Transformation: T = R⁻ᵀ  (lower-triangular)
     # Since R is upper-triangular, Rᵀ is lower-triangular, and T = (Rᵀ)⁻¹
     # is also lower-triangular.  We solve Rᵀ T' = I via forward substitution.
@@ -245,6 +219,40 @@ function orthogonalize_basis(basis::Dictionary; measure=nothing, quad_order=noth
     for i in 1:n; Id[i,i] = one(FT); end
     T_mat = R_dense' \ Id
     T_mat = LowerTriangular(T_mat) # enforce exact triangular structure
+
+    # --- Conditioning diagnostics ---
+    # The old diagonal-only estimate misses cases where the transformation
+    # itself develops very large coefficients even though the diagonal spread
+    # looks harmless.  Use the actual triangular change-of-basis map instead.
+    T_dense = Matrix(T_mat)
+    cond_T = cond(R_dense)                    # cond(T) == cond(R)
+    digits_lost = log10(cond_T)
+    working_digits = precision(FT) * log10(FT(2))  # bits → decimal digits
+    reliable_digits = working_digits - digits_lost
+    T_norm_inf = opnorm(T_dense, Inf)
+    max_abs_T = maximum(abs.(T_dense))
+
+    _sigfig(x; sigdigits::Integer=3) = round(Float64(x); sigdigits)
+    if reliable_digits < 1
+        @warn("Basis is nearly linearly dependent: orthogonalization is " *
+              "expected to lose about $(_sigfig(digits_lost)) " *
+              "decimal digits out of $(_sigfig(working_digits)) " *
+              "available. cond(T) ≈ $(_sigfig(cond_T)), ‖T‖∞ ≈ $(_sigfig(T_norm_inf)), " *
+              "max|Tᵢⱼ| ≈ $(_sigfig(max_abs_T)). The orthogonalized basis may have " *
+              "essentially no reliable digits, and downstream routines such as " *
+              "`compute_moments` or `compute_gauss_rule` may fail in $(FT) due " *
+              "to severe cancellation. Consider increasing BigFloat precision " *
+              "or using a better-conditioned basis.")
+    elseif digits_lost > working_digits / 3
+        @warn("Basis is ill-conditioned: orthogonalization is expected to lose " *
+              "about $(_sigfig(digits_lost)) decimal digits " *
+              "out of $(_sigfig(working_digits)) available. " *
+              "cond(T) ≈ $(_sigfig(cond_T)), ‖T‖∞ ≈ $(_sigfig(T_norm_inf)), max|Tᵢⱼ| ≈ " *
+              "$(_sigfig(max_abs_T)). Approximately $(_sigfig(reliable_digits)) " *
+              "digits remain. The orthogonalized basis can be much harder to " *
+              "evaluate stably than the original basis, and downstream routines " *
+              "such as `compute_gauss_rule` may require higher precision.")
+    end
 
     # Build orthonormalized functions: ψ_i(x) = Σ_{j=1}^{i} T_mat[i,j] φ_j(x)
     new_funs = [let coeffs = T_mat[i, 1:i]
@@ -273,6 +281,6 @@ function orthogonalize_basis(basis::Dictionary; measure=nothing, quad_order=noth
         nothing
     end
 
-    new_basis = GenericFunctionSet(new_funs, new_derivs, a, b)
+    new_basis = GenericFunctionSet(new_funs, new_derivs, a, b, digits_lost)
     new_basis, T_mat
 end

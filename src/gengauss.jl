@@ -182,7 +182,56 @@ function refine_interval_from_sweep(a, b, pts2, w, x, order, Fvals_sweep, direct
     a_new, b_new, wa_new, xa_new, wb_new, xb_new
 end
 
-function solve_system(rule, w0, x0; verbose=false, options...)
+function _newton_diagnostic(rule, newton_x, tol)
+    Fx = residual(rule, newton_x)
+    residual_norm = maximum(abs, Fx)
+    (; residual_norm, tolerance=tol, ratio=residual_norm / tol)
+end
+
+function _newton_exception_diagnostic(e)
+    (; residual_norm=nothing, tolerance=nothing, ratio=nothing, error=e)
+end
+
+function _format_newton_diagnostic(diag)
+    diag === nothing && return "diagnostic unavailable"
+    if :error in keys(diag)
+        return "diagnostic unavailable: solver threw $(typeof(diag.error))"
+    end
+    "residual=$(_fmt_sci(diag.residual_norm)), ftol=$(_fmt_sci(diag.tolerance)), residual/ftol=$(_fmt_sci(diag.ratio))"
+end
+
+orthogonalization_digits_lost(::Dictionary) = 0.0
+orthogonalization_digits_lost(dict::GenericFunctionSet) =
+    dict.orthogonalization_digits_lost
+
+function default_soft_canonical_lost_digits(dict::Dictionary)
+    lost = orthogonalization_digits_lost(dict)
+    isfinite(lost) || return 2
+    max(2, ceil(Int, (max(0.0, lost/2))))
+end
+
+function _resolve_soft_canonical_lost_digits(dict, soft_canonical_lost_digits)
+    soft_canonical_lost_digits === nothing ?
+        default_soft_canonical_lost_digits(dict) :
+        soft_canonical_lost_digits
+end
+
+function _soft_canonical_accepts(diag, soft_canonical_lost_digits)
+    diag === nothing && return false
+    :error in keys(diag) && return false
+    soft_canonical_lost_digits < 0 && return false
+    ratio = diag.ratio
+    isfinite(ratio) || return false
+    ratio <= typeof(ratio)(10)^typeof(ratio)(soft_canonical_lost_digits)
+end
+
+function _warn_soft_canonical_acceptance(label, xi, diag, soft_canonical_lost_digits)
+    println("WARNING: accepted $(label) Newton solve for $(xi) above ftol " *
+            "[$(_format_newton_diagnostic(diag)), max_lost_digits=$(soft_canonical_lost_digits)]; " *
+            "some accuracy may be lost.")
+end
+
+function solve_system_with_diagnostics(rule, w0, x0; verbose=false, options...)
     x_init = quad_to_newton(rule, w0, x0)
     F!(Fx, x) = residual!(Fx, rule, x)
     J!(Jx, x) = jacobian!(Jx, rule, x)
@@ -191,7 +240,12 @@ function solve_system(rule, w0, x0; verbose=false, options...)
 
     r = nlsolve(F!, J!, x_init; ftol = tol, options...)
     w, x = newton_to_quad(rule, r.zero)
-    converged(r), w, x
+    converged(r), w, x, _newton_diagnostic(rule, r.zero, tol)
+end
+
+function solve_system(rule, w0, x0; verbose=false, options...)
+    ok, w, x, _ = solve_system_with_diagnostics(rule, w0, x0; verbose, options...)
+    ok, w, x
 end
 
 function supportleft(dict)
@@ -246,7 +300,8 @@ end
 
 
 function compute_upper_canonical_representation(dict, moments, xi, w0, x0;
-        verbose=false, config::GaussRuleConfig=GaussRuleConfig(), options...)
+        verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
+        diagnostics::Bool=false, options...)
     @assert length(moments) == length(dict)
 
     _gengauss_debug_println("DEBUG: compute_upper_canonical_representation, even number of basis functions, (", length(dict), ")")
@@ -260,59 +315,44 @@ function compute_upper_canonical_representation(dict, moments, xi, w0, x0;
         error("TODO")
     end
     try
-        solve_system(rule, w0, x0; verbose, options...)
+        if diagnostics
+            solve_system_with_diagnostics(rule, w0, x0; verbose, options...)
+        else
+            solve_system(rule, w0, x0; verbose, options...)
+        end
     catch e
         if e isa InterruptException
             rethrow()
         end
         println("ERROR THROWN at $(xi) in computation of upper canonical")
         @show e
-        false, w0, x0
+        diagnostics ? (false, w0, x0, _newton_exception_diagnostic(e)) : (false, w0, x0)
     end
 end
 
 
 function compute_many_upper_canonical_representation(dict, moments, w0, x0, pts;
         verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
-        sweep_direction::Union{Symbol,Nothing}=nothing, options...)
+        sweep_direction::Union{Symbol,Nothing}=nothing,
+        max_adaptive_steps::Int=32, initial_xi=nothing,
+        soft_canonical_lost_digits=nothing, options...)
 
-    n = length(pts)
-    T = eltype(w0)
-    w = zeros(T,length(w0),n)
-    x = zeros(T,length(w0),n)
-    hasconverged = zeros(Bool,n)
-    dir = sweep_direction !== nothing ? sweep_direction : get_direction(config)
-    order = sweep_indices(n, dir)
-    prev_idx = nothing
-    _gengauss_debug_println("w0: ", w0)
-    _gengauss_debug_println("x0: ", x0)
-    _gengauss_debug_println("pts: ", pts)
-    _gengauss_debug_println("order: ", order)
-    w_prev, x_prev = w0, x0
-    for i in order
-        xi = pts[i]
-        if prev_idx !== nothing
-            w_prev = w[:,prev_idx]
-            x_prev = x[:,prev_idx]
-        end
-        converged, w1, x1 = compute_upper_canonical_representation(dict, moments, xi, w_prev, x_prev; verbose, config, options...)
-        if !converged && verbose
-            println("Many upper canonical: not converged for $(xi)")
-        end
-        w[:,i] = w1
-        x[:,i] = x1
-        _gengauss_debug_println("w1: ", w1)
-        _gengauss_debug_println("x1: ", x1)
-        hasconverged[i] = converged
-        prev_idx = i
-    end
-    I = findall(hasconverged)
-    any(hasconverged), w[:,I], x[:,I], pts[I]
+    initial_xi_resolved = initial_xi === nothing ?
+        (config.add_endpoint == :right ? first(x0) : x0[end-1]) :
+        initial_xi
+    soft_digits = _resolve_soft_canonical_lost_digits(dict,
+        soft_canonical_lost_digits)
+    _adaptive_canonical_sweep(compute_upper_canonical_representation,
+        "upper canonical", dict, moments, w0, x0, pts, initial_xi_resolved;
+        verbose, config, sweep_direction, max_adaptive_steps,
+        soft_canonical_lost_digits=soft_digits, options...)
 end
 
 function estimate_upper_canonical_representation(dict, moments, a, b, w0, x0;
         verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
-        sweep_direction::Union{Symbol,Nothing}=nothing, options...)
+        sweep_direction::Union{Symbol,Nothing}=nothing,
+        max_adaptive_steps::Int=32, soft_canonical_lost_digits=nothing,
+        options...)
     @assert isodd(length(dict))
     @assert length(dict) == length(moments)
     l = (length(dict)-1) >> 1
@@ -322,7 +362,8 @@ function estimate_upper_canonical_representation(dict, moments, a, b, w0, x0;
     verbose && println("Estimating upper canonical representation, xi between $(a) and $(b)")
     n = 8
     estimate_upper_canonical_representation(dict, moments, a, b, w0, x0, n;
-        verbose, config, sweep_direction, options...)
+        verbose, config, sweep_direction, max_adaptive_steps,
+        soft_canonical_lost_digits, options...)
 end
 
 function interpolate_starting_values(a, b, p, w_left, x_left, w_right, x_right)
@@ -334,9 +375,136 @@ end
 
 switches_sign(values) = ! (all(values .> 0) || all(values .< 0))
 
+function _canonical_midpoint(x_good, x_failed)
+    x_good + (x_failed - x_good) / 2
+end
+
+function _push_canonical_sample!(pts_done::Vector{T},
+        w_done::Vector{Vector{T}}, x_done::Vector{Vector{T}},
+        xi, w, x) where {T}
+    push!(pts_done, xi)
+    push!(w_done, T.(w))
+    push!(x_done, T.(x))
+    nothing
+end
+
+function _canonical_sample_matrix(cols::Vector{Vector{T}}, nrows::Int,
+        perm::Vector{Int}) where {T}
+    M = zeros(T, nrows, length(perm))
+    for (j, idx) in enumerate(perm)
+        M[:,j] = cols[idx]
+    end
+    M
+end
+
+function _adaptive_canonical_sweep(compute_one, label, dict, moments, w0, x0,
+        pts, initial_xi;
+        verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
+        sweep_direction::Union{Symbol,Nothing}=nothing,
+        max_adaptive_steps::Int=32,
+        soft_canonical_lost_digits::Real=2, options...)
+    n = length(pts)
+    T = promote_type(eltype(w0), eltype(x0), eltype(pts))
+    pts_done = T[]
+    w_done = Vector{Vector{T}}()
+    x_done = Vector{Vector{T}}()
+    dir = sweep_direction !== nothing ? sweep_direction : get_direction(config)
+    order = sweep_indices(n, dir)
+
+    _gengauss_debug_println("w0: ", w0)
+    _gengauss_debug_println("x0: ", x0)
+    _gengauss_debug_println("pts: ", pts)
+    _gengauss_debug_println("order: ", order)
+    _gengauss_debug_println("initial_xi: ", initial_xi)
+
+    xi_prev = initial_xi
+    w_prev, x_prev = w0, x0
+    for i in order
+        target = pts[i]
+        trial = target
+        adaptive_steps = 0
+        reached_target = false
+        last_diagnostic = nothing
+
+        while true
+            converged, w1, x1, last_diagnostic =
+                compute_one(dict, moments, trial, w_prev, x_prev;
+                    verbose, config, diagnostics=true, options...)
+
+            soft_converged = !converged &&
+                _soft_canonical_accepts(last_diagnostic,
+                    soft_canonical_lost_digits)
+            if soft_converged && verbose
+                _warn_soft_canonical_acceptance(label, trial,
+                    last_diagnostic, soft_canonical_lost_digits)
+            end
+
+            if converged || soft_converged
+                _push_canonical_sample!(pts_done, w_done, x_done, trial, w1, x1)
+                w_prev, x_prev = w1, x1
+                xi_prev = trial
+                if trial == target
+                    reached_target = true
+                    break
+                end
+                trial = target
+                continue
+            end
+
+            adaptive_steps += 1
+            if adaptive_steps > max_adaptive_steps
+                break
+            end
+
+            next_trial = _canonical_midpoint(xi_prev, trial)
+            if next_trial == xi_prev || next_trial == trial
+                break
+            end
+
+            _gengauss_debug_println(label, ": retrying at ", next_trial,
+                " after failed target ", trial,
+                " from last converged xi ", xi_prev)
+            trial = next_trial
+        end
+
+        if !reached_target && verbose
+            println("Many $(label): not converged for $(target) [$(_format_newton_diagnostic(last_diagnostic))]")
+        end
+        reached_target || break
+    end
+
+    if isempty(pts_done)
+        return false, zeros(T, length(w0), 0), zeros(T, length(x0), 0), T[]
+    end
+
+    perm = sortperm(pts_done)
+    w = _canonical_sample_matrix(w_done, length(w0), perm)
+    x = _canonical_sample_matrix(x_done, length(x0), perm)
+    true, w, x, pts_done[perm]
+end
+
 function estimate_upper_canonical_representation(dict, moments, a, b, w0, x0, n;
         verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
-        sweep_direction::Union{Symbol,Nothing}=nothing, options...)
+        sweep_direction::Union{Symbol,Nothing}=nothing,
+        max_adaptive_steps::Int=32, soft_canonical_lost_digits=nothing,
+        options...)
+    if n > 1024
+        println(
+            "estimate_upper_canonical_representation: canonical interval refinement is too small ",
+            "(adaptive sweep grid parameter n=", n,
+            " exceeds maximum 1024 without locating a suitable bracket).",
+        )
+        println(
+            "Either check that the quadrature basis is correct, or increase ",
+            "the soft_canonical_lost_digits parameter.",
+        )
+        if !verbose
+            println(
+                "Re-run with verbose=true (e.g. compute_gauss_rule(...; verbose=true)) ",
+                "to print Newton and sweep diagnostics.",
+            )
+        end
+    end
     @assert n <= 1024
 
     dir = sweep_direction !== nothing ? sweep_direction : get_direction(config)
@@ -345,10 +513,16 @@ function estimate_upper_canonical_representation(dict, moments, a, b, w0, x0, n;
     # end_seed will be computed from refine_interval_from_sweep results if needed
     end_seed = nothing
 
-    some_converged, w, x, pts2 = compute_many_upper_canonical_representation(dict[1:end-1], moments[1:end-1], w0, x0, pts; verbose, config, sweep_direction, options...)
+    initial_xi = dir == :left_to_right ? a : b
+    soft_digits = _resolve_soft_canonical_lost_digits(dict,
+        soft_canonical_lost_digits)
+    some_converged, w, x, pts2 = compute_many_upper_canonical_representation(
+        dict[1:end-1], moments[1:end-1], w0, x0, pts;
+        verbose, config, sweep_direction, max_adaptive_steps, initial_xi,
+        soft_canonical_lost_digits=soft_digits, options...)
     if some_converged
-        if verbose && length(pts2) < length(pts)
-            println("Upper canonical: converged for $(length(pts2)) out of $(length(pts)) points")
+        if verbose && length(pts2) != length(pts)
+            println("Upper canonical: collected $(length(pts2)) converged samples for $(length(pts)) requested grid points")
         end
         Fvals = [Fk(w[:,i],x[:,i],dict[end], moments[end]) for i in 1:size(w,2)]
         order = sweep_indices(length(Fvals), dir)
@@ -380,11 +554,11 @@ function estimate_upper_canonical_representation(dict, moments, a, b, w0, x0, n;
                 w0_new = config.add_endpoint == :left ? wa_new : wb_new
                 x0_new = config.add_endpoint == :left ? xa_new : xb_new
             end
-            estimate_upper_canonical_representation(dict, moments, a_new, b_new, w0_new, x0_new, n; verbose, config, sweep_direction, options...)
+            estimate_upper_canonical_representation(dict, moments, a_new, b_new, w0_new, x0_new, n; verbose, config, sweep_direction, max_adaptive_steps, soft_canonical_lost_digits=soft_digits, options...)
         end
     else
         verbose && println("Upper canonical: increasing n to $(2n)")
-        estimate_upper_canonical_representation(dict, moments, a, b, w0, x0, 2n; verbose, config, sweep_direction, options...)
+        estimate_upper_canonical_representation(dict, moments, a, b, w0, x0, 2n; verbose, config, sweep_direction, max_adaptive_steps, soft_canonical_lost_digits=soft_digits, options...)
     end
 end
 
@@ -408,7 +582,8 @@ function compute_upper_principal_representation(dict, moments, w0, x0;
 end
 
 function compute_lower_canonical_representation(dict, moments, xi, w0, x0;
-        verbose=false, config::GaussRuleConfig=GaussRuleConfig(), options...)
+        verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
+        diagnostics::Bool=false, options...)
     @assert length(moments) == length(dict)
 
     if isodd(length(dict))
@@ -437,60 +612,43 @@ function compute_lower_canonical_representation(dict, moments, xi, w0, x0;
     end
 
     try
-        solve_system(rule, w0, x0; verbose, options...)
+        if diagnostics
+            solve_system_with_diagnostics(rule, w0, x0; verbose, options...)
+        else
+            solve_system(rule, w0, x0; verbose, options...)
+        end
     catch e
         if e isa InterruptException
             rethrow()
         end
         println("ERROR THROWN at $(xi) in computation of lower canonical")
         @show e
-        false, w0, x0
+        diagnostics ? (false, w0, x0, _newton_exception_diagnostic(e)) : (false, w0, x0)
     end
 end
 
 function compute_many_lower_canonical_representation(dict, moments, w0, x0, pts;
         verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
-        sweep_direction::Union{Symbol,Nothing}=nothing, options...)
-    
-    n = length(pts)
-    T = eltype(w0)
-    w = zeros(T,length(w0),n)
-    x = zeros(T,length(w0),n)
-    hasconverged = zeros(Bool,n)
-    dir = sweep_direction !== nothing ? sweep_direction : get_direction(config)
-    order = sweep_indices(n, dir)
-    prev_idx = nothing
-    _gengauss_debug_println("w0: ", w0)
-    _gengauss_debug_println("x0: ", x0)
-    _gengauss_debug_println("pts: ", pts)
-    _gengauss_debug_println("order: ", order)
-    w_prev, x_prev = w0, x0
-    for i in order
-        xi = pts[i]
-        if prev_idx !== nothing
-            w_prev = w[:,prev_idx]
-            x_prev = x[:,prev_idx]
-        end
-        converged, w1, x1 =
-            compute_lower_canonical_representation(dict, moments, xi, w_prev, x_prev;
-                verbose, config, options...)
-        if !converged && verbose
-            println("Many lower canonical: not converged for $(xi)")
-        end
-        w[:,i] = w1
-        x[:,i] = x1
-        _gengauss_debug_println("w1: ", w1)
-        _gengauss_debug_println("x1: ", x1)
-        hasconverged[i] = converged
-        prev_idx = i
-    end
-    I = findall(hasconverged)
-    any(hasconverged), w[:,I], x[:,I], pts[I]
+        sweep_direction::Union{Symbol,Nothing}=nothing,
+        max_adaptive_steps::Int=32, initial_xi=nothing,
+        soft_canonical_lost_digits=nothing, options...)
+
+    initial_xi_resolved = initial_xi === nothing ?
+        (config.add_endpoint == :right ? first(x0) : last(x0)) :
+        initial_xi
+    soft_digits = _resolve_soft_canonical_lost_digits(dict,
+        soft_canonical_lost_digits)
+    _adaptive_canonical_sweep(compute_lower_canonical_representation,
+        "lower canonical", dict, moments, w0, x0, pts, initial_xi_resolved;
+        verbose, config, sweep_direction, max_adaptive_steps,
+        soft_canonical_lost_digits=soft_digits, options...)
 end
 
 function estimate_lower_canonical_representation(dict, moments, a, b, w0, x0;
         verbose = false, config::GaussRuleConfig=GaussRuleConfig(),
-        sweep_direction::Union{Symbol,Nothing}=nothing, options...)
+        sweep_direction::Union{Symbol,Nothing}=nothing,
+        max_adaptive_steps::Int=32, soft_canonical_lost_digits=nothing,
+        options...)
     @assert length(dict) == length(moments)
     l = length(dict) >> 1
     #@assert length(w0) == l
@@ -499,12 +657,32 @@ function estimate_lower_canonical_representation(dict, moments, a, b, w0, x0;
     verbose && println("Estimating lower canonical representation, xi between $(a) and $(b)")
     n = 8
     estimate_lower_canonical_representation(dict, moments, a, b, w0, x0, n;
-        verbose, config, sweep_direction, options...)
+        verbose, config, sweep_direction, max_adaptive_steps,
+        soft_canonical_lost_digits, options...)
 end
 
 function estimate_lower_canonical_representation(dict, moments, a, b, w0, x0, n;
         verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
-        sweep_direction::Union{Symbol,Nothing}=nothing, options...)
+        sweep_direction::Union{Symbol,Nothing}=nothing,
+        max_adaptive_steps::Int=32, soft_canonical_lost_digits=nothing,
+        options...)
+    if n > 1024
+        println(
+            "estimate_lower_canonical_representation: canonical interval refinement is too small ",
+            "(adaptive sweep grid parameter n=", n,
+            " exceeds maximum 1024 without locating a suitable bracket).",
+        )
+        println(
+            "Either check that the quadrature basis is correct, or increase ",
+            "the soft_canonical_lost_digits parameter.",
+        )
+        if !verbose
+            println(
+                "Re-run with verbose=true (e.g. compute_gauss_rule(...; verbose=true)) ",
+                "to print Newton and sweep diagnostics.",
+            )
+        end
+    end
     @assert n <= 1024
 
     dir = sweep_direction !== nothing ? sweep_direction : get_direction(config)
@@ -512,12 +690,16 @@ function estimate_lower_canonical_representation(dict, moments, a, b, w0, x0, n;
     pts = collect(range(a, b, length=n+2)[2:end-1])
     # end_seed will be computed from refine_interval_from_sweep results if needed
     end_seed = nothing
+    initial_xi = dir == :left_to_right ? a : b
+    soft_digits = _resolve_soft_canonical_lost_digits(dict,
+        soft_canonical_lost_digits)
     someconverged, w, x, pts2 = compute_many_lower_canonical_representation(
         dict[1:end-1], moments[1:end-1], w0, x0, pts;
-        verbose, config, sweep_direction, options...)
+        verbose, config, sweep_direction, max_adaptive_steps, initial_xi,
+        soft_canonical_lost_digits=soft_digits, options...)
     if someconverged
-        if verbose && length(pts2)<length(pts)
-            println("Lower canonical: converged for $(length(pts2)) out of $(length(pts)) points")
+        if verbose && length(pts2) != length(pts)
+            println("Lower canonical: collected $(length(pts2)) converged samples for $(length(pts)) requested grid points")
         end
         Fvals = [Fk(w[:,i],x[:,i],dict[end], moments[end]) for i in 1:size(w,2)]
         order = sweep_indices(length(Fvals), dir)
@@ -551,12 +733,14 @@ function estimate_lower_canonical_representation(dict, moments, a, b, w0, x0, n;
                 x0_new = config.add_endpoint == :left ? xa_new : xb_new
             end
             estimate_lower_canonical_representation(dict, moments, a_new, b_new, w0_new, x0_new, 8;
-                verbose, config, sweep_direction, options...)
+                verbose, config, sweep_direction, max_adaptive_steps,
+                soft_canonical_lost_digits=soft_digits, options...)
         end
     else
         verbose && println("Lower canonical: no convergence on grid, increasing to n=$(2n)")
         estimate_lower_canonical_representation(dict, moments, a, b, w0, x0, 2n;
-            verbose, config, sweep_direction, options...)
+            verbose, config, sweep_direction, max_adaptive_steps,
+            soft_canonical_lost_digits=soft_digits, options...)
     end
 end
 
@@ -808,7 +992,8 @@ end
 """
     compute_gauss_rules(dict::Dictionary, moments = nothing;
         measure = nothing, verbose = false, principal = :lower,
-        add_endpoint = nothing, options...)
+        add_endpoint = nothing, max_adaptive_steps = 32,
+        soft_canonical_lost_digits = nothing, options...)
 
 Compute the sequence of generalized Gaussian quadrature rules associated with
 `dict`. Returns the final rule together with all intermediate principal
@@ -861,11 +1046,20 @@ Keyword arguments:
   `compute_moments(dict; measure=measure)`. Ignored when `moments` are passed
   explicitly.
 - `verbose`: print progress information during the continuation.
+- `max_adaptive_steps`: maximum midpoint retries per canonical grid target when
+  Newton fails from the previous converged continuation point.
+- `soft_canonical_lost_digits`: extra decimal digits by which intermediate
+  canonical Newton residuals may miss `ftol` and still be accepted with a
+  warning when `verbose=true`. Default `nothing` means 2 digits, or
+  `max(2, ceil(sqrt(orthogonalization_digits_lost)))` for bases returned by
+  `orthogonalize_basis`.
 - `options`: forwarded to the nonlinear solver used at every refinement step.
 """
 function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = nothing;
         measure = nothing, verbose = false, principal::Symbol = :lower,
         add_endpoint::Union{Nothing,Symbol} = nothing,
+        max_adaptive_steps::Int = 32,
+        soft_canonical_lost_digits = nothing,
         options...)
     n = length(dict)
     add_endpoint_resolved = resolve_add_endpoint(principal, add_endpoint)
@@ -896,6 +1090,8 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
 
     config = GaussRuleConfig(; principal, add_endpoint=add_endpoint_resolved)
     steps = default_representation_steps(config.principal, config.add_endpoint, iseven(n))
+    soft_canonical_lost_digits_resolved =
+        _resolve_soft_canonical_lost_digits(dict, soft_canonical_lost_digits)
 
     l = n >> 1 # equivalent to l = n / 2 integer division
     T = codomaintype(dict)
@@ -988,12 +1184,12 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
                 _gengauss_debug_println("DEBUG: length(moments[1:tot_moments]): ", length(moments[1:tot_moments]))
                 if step.branch == :upper
                     _, _, _, _, w2, x2 =
-                        estimate_upper_canonical_representation(dict[1:tot_moments], moments[1:tot_moments], a, b, w0, x0; verbose, config, options...)
+                        estimate_upper_canonical_representation(dict[1:tot_moments], moments[1:tot_moments], a, b, w0, x0; verbose, config, max_adaptive_steps, soft_canonical_lost_digits=soft_canonical_lost_digits_resolved, options...)
                         upper_canonical_state = (w2, x2)
                         lower_canonical_state = nothing
                 elseif step.branch == :lower
                     _, _, _, _, w2, x2 =
-                        estimate_lower_canonical_representation(dict[1:tot_moments], moments[1:tot_moments], a, b, w0, x0; verbose, config, options...)
+                        estimate_lower_canonical_representation(dict[1:tot_moments], moments[1:tot_moments], a, b, w0, x0; verbose, config, max_adaptive_steps, soft_canonical_lost_digits=soft_canonical_lost_digits_resolved, options...)
                         upper_canonical_state = nothing
                         lower_canonical_state = (w2, x2)
                 else
