@@ -64,17 +64,17 @@ default_threshold(dict::Dictionary) = default_threshold(codomaintype(dict))
 default_threshold(::Type{T}) where {T <: AbstractFloat} = sqrt(eps(T))/100
 default_threshold(::Type{BigFloat}) = BigFloat(10)^(-20)
 
-solver_tolerance(::Type{Float64}) = eps(Float64)#^(3/4)
-solver_tolerance(::Type{T}) where {T} = eps(T)#^(3/4)
-# For BigFloat, use full machine epsilon so the Newton solve converges to
-# the precision set by `setprecision(BigFloat, ...)`.  The extra iterations
-# are negligible for the small systems arising in quadrature construction.
-solver_tolerance(::Type{BigFloat}) = eps(BigFloat)
+solver_tolerance(::Type{Float64}) = 10 * eps(Float64)
+solver_tolerance(::Type{T}) where {T} = 10 * eps(T)
+# Use one decimal digit above machine epsilon by default. This avoids treating
+# harmless final-roundoff residuals as Newton failures.
+solver_tolerance(::Type{BigFloat}) = BigFloat(10) * eps(BigFloat)
 
 # Type-dispatched policy hooks. Downstream packages can extend these methods
 # for their working precision while still using keyword overrides per call.
 canonical_lost_digits(::Type{T}) where {T} = 2
 lobatto_lost_digits(::Type{T}) where {T} = canonical_lost_digits(T)
+principal_lost_digits(::Type{T}) where {T} = 0
 
 struct RepresentationStep
     branch::Symbol
@@ -234,6 +234,14 @@ function _resolve_lobatto_lost_digits(dict, override,
     max(base_digits, _orthogonalization_lost_digits_floor(dict))
 end
 
+function _resolve_principal_lost_digits(dict, override,
+        policy_type::Type=codomaintype(dict))
+    base_digits = override === nothing ?
+        principal_lost_digits(policy_type) :
+        override
+    max(base_digits, _orthogonalization_lost_digits_floor(dict))
+end
+
 function _lost_digits_accepts(diag, lost_digits)
     diag === nothing && return false
     :error in keys(diag) && return false
@@ -249,6 +257,10 @@ end
 
 function _lobatto_lost_digits_accepts(diag, lobatto_lost_digits)
     _lost_digits_accepts(diag, lobatto_lost_digits)
+end
+
+function _principal_lost_digits_accepts(diag, principal_lost_digits)
+    _lost_digits_accepts(diag, principal_lost_digits)
 end
 
 function _warn_lost_digits_acceptance(label, location, diag, lost_digits,
@@ -268,6 +280,27 @@ function _warn_lobatto_lost_digits_acceptance(diag, lobatto_lost_digits)
     _warn_lost_digits_acceptance("Gauss-Lobatto final",
         nothing, diag, lobatto_lost_digits,
         "lobatto_lost_digits")
+end
+
+function _warn_principal_lost_digits_acceptance(label, location, diag, principal_lost_digits)
+    _warn_lost_digits_acceptance(label, location, diag, principal_lost_digits,
+        "principal_lost_digits")
+end
+
+function _require_principal_convergence(label, location, converged, diag,
+        principal_lost_digits; verbose=false)
+    converged && return true
+    if _principal_lost_digits_accepts(diag, principal_lost_digits)
+        verbose && _warn_principal_lost_digits_acceptance(label, location,
+            diag, principal_lost_digits)
+        return true
+    end
+
+    where = location === nothing ? "" : " for $(location)"
+    println("ERROR: $(label) Newton solve$(where) failed " *
+            "[$(_format_newton_diagnostic(diag)), " *
+            "principal_lost_digits=$(principal_lost_digits)]; stopping.")
+    error("$(label) Newton solve failed. Consider increasing principal_lost_digits if residual is still acceptable.")
 end
 
 function solve_system_with_diagnostics(rule, w0, x0; verbose=false, options...)
@@ -293,7 +326,9 @@ function supportleft(dict)
 end
 supportright(dict) = rightendpoint(support(dict))
 
-function compute_one_point_rule(dict, moments; config::GaussRuleConfig=GaussRuleConfig(), options...)
+function compute_one_point_rule(dict, moments; verbose=false,
+        config::GaussRuleConfig=GaussRuleConfig(),
+        principal_lost_digits::Real=0, options...)
     @assert length(dict) == 2
     @assert length(moments) == 2
 
@@ -304,8 +339,14 @@ function compute_one_point_rule(dict, moments; config::GaussRuleConfig=GaussRule
     # For the one-point rule, we want to always use LowerPrincipalOdd (free point, not fixed endpoints)
     # regardless of config.add_endpoint, so create a temporary config that forces this
     one_point_config = GaussRuleConfig(; principal=config.principal, add_endpoint=:right)
-    converged, w, x = compute_lower_principal_representation(dict, moments, w0, x0; config=one_point_config, options...)
-    @assert converged
+    converged, w, x, diag = compute_lower_principal_representation(dict, moments, w0, x0;
+        verbose, config=one_point_config, diagnostics=true, options...)
+    if !converged
+        converged, w, x, diag = compute_lower_principal_representation(dict, moments, w, x;
+            verbose, config=one_point_config, diagnostics=true, options...)
+    end
+    _require_principal_convergence("one-point principal", first(x),
+        converged, diag, principal_lost_digits; verbose)
     w, x
 end
 
@@ -602,21 +643,24 @@ function estimate_upper_canonical_representation(dict, moments, a, b, w0, x0, n;
 end
 
 function compute_upper_principal_representation(dict, moments, w0, x0;
-        verbose=false, config::GaussRuleConfig=GaussRuleConfig(), options...)
+        verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
+        diagnostics::Bool=false, options...)
     @assert isodd(length(dict))
     @assert length(moments) == length(dict)
     @assert length(w0) == (length(dict)>>1)+1
 
     rule = upper_principal_rule(dict, moments, config)
     try
-        solve_system(rule, w0, x0; verbose, options...)
+        if diagnostics
+            solve_system_with_diagnostics(rule, w0, x0; verbose, options...)
+        else
+            solve_system(rule, w0, x0; verbose, options...)
+        end
     catch e
         if e isa InterruptException
             rethrow()
         end
-        println("ERROR THROWN in computation of upper principal")
-        @show e
-        false, w0, x0
+        diagnostics ? (false, w0, x0, _newton_exception_diagnostic(e)) : (false, w0, x0)
     end
 end
 
@@ -784,7 +828,8 @@ function estimate_lower_canonical_representation(dict, moments, a, b, w0, x0, n;
 end
 
 function compute_lower_principal_representation(dict, moments, w0, x0;
-        verbose=false, config::GaussRuleConfig=GaussRuleConfig(), options...)
+        verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
+        diagnostics::Bool=false, options...)
     if isodd(length(dict))
         # odd number of (n+1) basis functions (even n)
         rule = LowerPrincipalEven(dict, moments)
@@ -793,13 +838,16 @@ function compute_lower_principal_representation(dict, moments, w0, x0;
         rule = LowerPrincipalOdd(dict, moments)
     end
     try
-        solve_system(rule, w0, x0; verbose, options...)
+        if diagnostics
+            solve_system_with_diagnostics(rule, w0, x0; verbose, options...)
+        else
+            solve_system(rule, w0, x0; verbose, options...)
+        end
     catch e
         if e isa InterruptException
             rethrow()
         end
-        println("ERROR THROWN in computation of lower principal: ", e)
-        false, w0, x0
+        diagnostics ? (false, w0, x0, _newton_exception_diagnostic(e)) : (false, w0, x0)
     end
 end
 
@@ -1064,6 +1112,7 @@ end
         measure = nothing, verbose = false, principal = :lower,
         add_endpoint = nothing, max_adaptive_steps = 32,
         canonical_lost_digits = nothing,
+        principal_lost_digits = nothing,
         lobatto_lost_digits = nothing, options...)
 
 Compute the sequence of generalized Gaussian quadrature rules associated with
@@ -1129,6 +1178,9 @@ Keyword arguments:
 - `lobatto_lost_digits`: same lost-digit allowance for the final
   Gauss-Lobatto Newton solve, with a warning when `verbose=true`. Default
   `nothing` uses the same policy as `lobatto_lost_digits(T)`.
+- `principal_lost_digits`: same lost-digit allowance for non-Lobatto principal
+  Newton solves. Default `nothing` uses `principal_lost_digits(T)`, which is 0
+  unless overridden, then applies the orthogonalization floor.
 - `options`: forwarded to the nonlinear solver used at every refinement step.
 """
 function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = nothing;
@@ -1136,6 +1188,7 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
         add_endpoint::Union{Nothing,Symbol} = nothing,
         max_adaptive_steps::Int = 32,
         canonical_lost_digits = nothing,
+        principal_lost_digits = nothing,
         lobatto_lost_digits = nothing,
         options...)
     n = length(dict)
@@ -1170,6 +1223,9 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
     canonical_lost_digits_resolved =
         _resolve_canonical_lost_digits(dict, canonical_lost_digits,
             _lost_digits_policy_type(dict, moments))
+    principal_lost_digits_resolved =
+        _resolve_principal_lost_digits(dict, principal_lost_digits,
+            _lost_digits_policy_type(dict, moments))
     lobatto_lost_digits_resolved =
         _resolve_lobatto_lost_digits(dict, lobatto_lost_digits,
             _lost_digits_policy_type(dict, moments))
@@ -1200,7 +1256,9 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
     push!(x_checkpoints, T[])  # Empty placeholder (no quadrature rule yet)
 
     verbose && println("Computing initial one point rule")
-    w, x = compute_one_point_rule(dict[1:2], moments[1:2]; verbose, config, options...)
+    w, x = compute_one_point_rule(dict[1:2], moments[1:2];
+        verbose, config, principal_lost_digits=principal_lost_digits_resolved,
+        options...)
     verbose && println("One point quadrature rule is: ", x, ", ", w)
 
     # Add initial one-point rule as second checkpoint
@@ -1282,9 +1340,22 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
                 _gengauss_debug_println("DEBUG: x2: ", x2)
                 _gengauss_debug_println("DEBUG: w2: ", w2)
                 _gengauss_debug_println("DEBUG: len moments: ", length(moments[1:tot_moments]))
-                converged, w, x = compute_upper_principal_representation(dict[1:tot_moments], moments[1:tot_moments], w2, x2; verbose, config, options...)
+                converged, w, x, principal_diag =
+                    compute_upper_principal_representation(
+                        dict[1:tot_moments], moments[1:tot_moments], w2, x2;
+                        verbose, config, diagnostics=true, options...)
+                if !converged
+                    converged, w, x, principal_diag =
+                        compute_upper_principal_representation(
+                            dict[1:tot_moments], moments[1:tot_moments], w, x;
+                            verbose, config, diagnostics=true, options...)
+                end
                 xi = xi_extractor(x)
                 upper_principal_index += 1
+                _require_principal_convergence(
+                    "upper principal representation $(upper_principal_index)",
+                    xi, converged, principal_diag, principal_lost_digits_resolved;
+                    verbose)
                 verbose && println("Upper principal representation ", upper_principal_index, " : xi is ", xi)
                 verbose && println("    x: ", x)
                 # Track Step 2 anchored-Radau rule (only set when step.k == 1, i.e.
@@ -1316,9 +1387,22 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
                 _gengauss_debug_println("DEBUG: x2: ", x2)
                 _gengauss_debug_println("DEBUG: w2: ", w2)
                 _gengauss_debug_println("DEBUG: len moments: ", length(moments[1:tot_moments]))
-                converged, w, x = compute_lower_principal_representation(dict[1:tot_moments], moments[1:tot_moments], w2, x2; verbose, config, options...)
+                converged, w, x, principal_diag =
+                    compute_lower_principal_representation(
+                        dict[1:tot_moments], moments[1:tot_moments], w2, x2;
+                        verbose, config, diagnostics=true, options...)
+                if !converged
+                    converged, w, x, principal_diag =
+                        compute_lower_principal_representation(
+                            dict[1:tot_moments], moments[1:tot_moments], w, x;
+                            verbose, config, diagnostics=true, options...)
+                end
                 xi = xi_extractor(x)
                 lower_principal_index += 1
+                _require_principal_convergence(
+                    "lower principal representation $(lower_principal_index)",
+                    xi, converged, principal_diag, principal_lost_digits_resolved;
+                    verbose)
                 verbose && println("Lower principal representation ", lower_principal_index, " : xi is ", xi)
                 verbose && println("    x: ", x)
                 # Add to unified checkpoints (always add, not conditional on has_lower)
