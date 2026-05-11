@@ -5,30 +5,31 @@ using BasisFunctions, DomainSets, GeneralizedGauss
 # ============================================================================
 
 # Number of polynomial basis functions (degree n means we use polynomials up to degree n)
-n = 4
+n = 3
 
 # Option to use Chebyshev polynomials instead of monomials for better conditioning
 # Chebyshev polynomials are orthogonal on [-1,1], which helps with numerical stability
 # Set to true to use Chebyshev polynomials, false to use monomials (x^i)
 use_chebyshev = false
+orthogonalize = true
 
 # Option to test derivatives using finite differences
 # This verifies that the manually written derivatives are correct
-test_derivatives = true
+test_derivatives = false
 
 # Domain of integration [a, b]
-a = 0.0
+a = -1.0
 b = 1.0
 
 # tolerance of the Newton solver: 10^(-newton_digits)
-newton_tol_digits = 20
+newton_tol_digits = 10
 
 # How many extra digits to add to the BigFloat precision?
 # total precision = newton_tol_digits + extra_digits
-extra_digits = 4
+extra_digits = 1
 
 # also get the lower and upper principal representations?
-get_principal_representations = true
+get_principal_representations = false
 
 # ============================================================================
 # Set BigFloat precision and solver tolerance
@@ -300,6 +301,11 @@ end
 a_big = BigFloat(a)
 b_big = BigFloat(b)
 basis = quadbasis(basis_funs, basis_derivs, a_big, b_big)
+if orthogonalize
+    basis, _ = orthogonalize_basis(basis)
+end
+#check_T_system(basis)
+#check_ECT_system(basis)
 if get_principal_representations
     w, x, xi_checkpoints, w_checkpoints, x_checkpoints = compute_gauss_rules(basis)
 else
