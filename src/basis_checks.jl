@@ -1231,7 +1231,7 @@ end
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# Section 7: Collocation-based E-system diagnostic
+# Section 7: Collocation-based T-system diagnostic
 # ────────────────────────────────────────────────────────────────────────────
 
 struct ESystemCheckResult{T}
@@ -1265,7 +1265,7 @@ struct ESystemCheckResult{T}
 end
 
 function Base.show(io::IO, r::ESystemCheckResult)
-    status = r.sampled_pass ? "PASS (sampled E-system)" : "FAIL (sampled E-system)"
+    status = r.sampled_pass ? "PASS (sampled T-system)" : "FAIL (sampled T-system)"
     print(io, "ESystemCheckResult(m=$(r.m), tuples=$(r.num_tuples), " *
           "[$(_fmt_short(r.a)), $(_fmt_short(r.b))], $status)")
 end
@@ -1341,7 +1341,8 @@ function _sample_e_system_tuple(rng::AbstractRNG, a::T, b::T,
     _affine_tuple(a, b, z)
 end
 
-function _normalized_collocation_det(basis, xs::AbstractVector{T}, m::Int) where T
+function _divided_difference_collocation_det(basis, xs::AbstractVector{T},
+                                             m::Int) where T
     A = Matrix{T}(undef, m, m)
     for j in 1:m
         xj = xs[j]
@@ -1350,23 +1351,65 @@ function _normalized_collocation_det(basis, xs::AbstractVector{T}, m::Int) where
         end
     end
 
-    denom = one(T)
-    for j in 2:m
-        xj = xs[j]
-        for i in 1:j-1
-            gap = xj - xs[i]
-            gap > zero(T) || error("Ordered tuple with strictly increasing points required.")
-            denom *= gap
+    # Convert value columns to Newton divided-difference columns in place.
+    # The transformation determinant is exactly inv(prod_{i<j}(x_j - x_i)),
+    # so det(A) after this loop equals the normalized collocation determinant.
+    for order in 2:m
+        for j in m:-1:order
+            gap = xs[j] - xs[j - order + 1]
+            gap > zero(T) ||
+                error("Ordered tuple with strictly increasing points required.")
+            for i in 1:m
+                A[i, j] = (A[i, j] - A[i, j - 1]) / gap
+            end
         end
     end
 
-    det(A) / denom
+    det(A)
+end
+
+function _cluster_guard_bits(xs::AbstractVector{T}, interval_width::T,
+                             m::Int) where T
+    m <= 1 && return 0
+
+    min_gap = minimum(xs[j] - xs[j - 1] for j in 2:m)
+    min_gap > zero(T) ||
+        error("Ordered tuple with strictly increasing points required.")
+
+    scale = max(abs(interval_width), one(T))
+    rel_gap = min(one(T), min_gap / scale)
+    rel_gap > zero(T) || return typemax(Int) ÷ 4
+
+    # Divided differences of order m-1 lose roughly log2(1/h) bits per order
+    # when the nodes are tightly clustered.  Add guard bits only for that local
+    # calculation instead of forcing users to raise global BigFloat precision.
+    ceil(Int, (m - 1) * max(0.0, -Float64(log2(rel_gap))))
+end
+
+function _normalized_collocation_det(basis, xs::AbstractVector{T}, m::Int,
+                                     interval_width::T) where T
+    if T === BigFloat
+        base_bits = precision(BigFloat)
+        guard_bits = _cluster_guard_bits(xs, interval_width, m)
+        extra_bits = max(0, guard_bits - base_bits ÷ 2)
+        work_bits = max(base_bits, min(base_bits + extra_bits + 64,
+                                      base_bits + 2048))
+
+        if work_bits > base_bits
+            return setprecision(BigFloat, work_bits) do
+                xs_work = BigFloat.(xs)
+                _divided_difference_collocation_det(basis, xs_work, m)
+            end
+        end
+    end
+
+    _divided_difference_collocation_det(basis, xs, m)
 end
 
 """
     check_T_system(basis; num_tuples=5000, tuple_size=length(basis), verbose=true, rng=Random.default_rng(), near_zero_rel_tol=eps(T)^(1/3))
 
-Numerically test the Chebyshev-system (E-system) property by sampling ordered
+Numerically test the Chebyshev-system (T-system) property by sampling ordered
 tuples `x_1 < ⋯ < x_m` and checking whether the normalized collocation
 determinant
 
@@ -1374,8 +1417,13 @@ determinant
 
 keeps a fixed nonzero sign.
 
+Internally, the normalized determinant is evaluated as a determinant of Newton
+divided differences rather than by forming `det([f_i(x_j)])` and dividing by a
+Vandermonde product.  For tightly clustered `BigFloat` tuples the local working
+precision is raised automatically for this determinant calculation only.
+
 This is a numerical diagnostic, not a proof.  A detected sign change or
-near-zero value is strong evidence against the E-system property.  Passing the
+near-zero value is strong evidence against the T-system property.  Passing the
 sampled test is evidence in favor of the property, but does not certify it.
 """
 function check_T_system(basis;
@@ -1408,7 +1456,8 @@ function check_T_system(basis;
     for idx in 1:warmup_count
         xs = _sample_e_system_tuple(rng, a_inner, b_inner, tuple_size, idx, FT)
         warmup_tuples[idx] = xs
-        warmup_vals[idx] = _normalized_collocation_det(basis, xs, tuple_size)
+        warmup_vals[idx] = _normalized_collocation_det(basis, xs, tuple_size,
+                                                       b_inner - a_inner)
     end
 
     ref_idx = 0
@@ -1466,7 +1515,8 @@ function check_T_system(basis;
 
     for idx in warmup_count+1:num_tuples
         xs = _sample_e_system_tuple(rng, a_inner, b_inner, tuple_size, idx, FT)
-        val = _normalized_collocation_det(basis, xs, tuple_size)
+        val = _normalized_collocation_det(basis, xs, tuple_size,
+                                          b_inner - a_inner)
         _update_state!(xs, val)
     end
 
@@ -1488,7 +1538,7 @@ function check_T_system(basis;
 
     if verbose
         println()
-        println("  Collocation determinant check for E-system property")
+        println("  Collocation determinant check for T-system property")
         println("  Basis: first $tuple_size functions on [$(_fmt_short(a)), $(_fmt_short(b))]")
         println("  Sampled tuples: $num_tuples")
         println("  Tuple strategies: equispaced, Chebyshev-like, endpoint-heavy, random, clustered")
@@ -1504,8 +1554,8 @@ function check_T_system(basis;
         println("  Near-zero detected:                     $(near_zero_detected ? "yes" : "no")")
         println("  Non-finite detected:                    $(nonfinite_detected ? "yes" : "no")")
         println("  Result: " * (sampled_pass ?
-                "Sampled tuples support the E-system property." :
-                "Sampled tuples found a potential E-system failure witness."))
+                "Sampled tuples support the T-system property." :
+                "Sampled tuples found a potential T-system failure witness."))
         println()
     end
 
@@ -1520,11 +1570,11 @@ function check_T_system(basis;
         @warn("The normalized collocation determinant changed sign on the " *
               "sampled tuple $(_fmt_tuple(worst_tuple)).  This is strong " *
               "evidence that the first $tuple_size basis functions do not " *
-              "form an E-system.")
+              "form a T-system.")
     elseif near_zero_detected
         @warn("The normalized collocation determinant became very small on " *
               "the sampled tuple $(_fmt_tuple(worst_tuple)).  This is " *
-              "evidence against a robust E-system property, but not a proof.")
+              "evidence against a robust T-system property, but not a proof.")
     end
 
     result
@@ -1537,14 +1587,34 @@ end
 _fmt_short(x::BigFloat) = string(Float64(x))
 _fmt_short(x) = string(x)
 
-function _fmt_sci(x)
-    x == 0 && return "0.000e+00"
-    e = floor(Int, Float64(log10(abs(x))))
-    m = Float64(x / typeof(x)(10)^e)
-    abs(m) >= 10 && (m /= 10; e += 1)
-    abs(m) < 1   && (m *= 10; e -= 1)
-    s = e >= 0 ? "+" : "-"
-    "$(round(m, digits=3))e$(s)$(lpad(abs(e), 2, '0'))"
+# `m.dde±ee` with two fractional mantissa digits; `Float64`-based (BigFloat is cast).
+function _fmt_sci(x::Real)
+    !isfinite(x) && return string(x)
+    iszero(x) && return "0.00e+00"
+    neg = signbit(x) ? "-" : ""
+    ax = Float64(abs(x))
+    ax == 0 && return "0.00e+00"
+    e = floor(Int, log10(ax))
+    m = ax / 10.0^e
+    while m >= 10
+        m /= 10
+        e += 1
+    end
+    while m < 1
+        m *= 10
+        e -= 1
+    end
+    mr = round(m; digits=2)
+    if mr >= 10
+        mr /= 10
+        e += 1
+    end
+    h = round(Int, round(mr; digits=2) * 100)
+    intpart, frac = divrem(h, 100)
+    mantissa_str = "$(intpart).$(lpad(frac, 2, '0'))"
+    esign = e >= 0 ? "+" : "-"
+    emag = lpad(string(abs(e)), 2, '0')
+    "$(neg)$(mantissa_str)e$(esign)$(emag)"
 end
 
 function _fmt_loc(x)

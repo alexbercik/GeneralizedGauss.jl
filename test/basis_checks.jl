@@ -661,11 +661,11 @@ bf_medium_tol() = eps(BigFloat)^(BigFloat(1) / 2)
 end
 
 # -------------------------------------------------------------------
-# 25–26. Collocation-based E-system diagnostics (full determinant sampling)
+# 25–26. Collocation-based T-system diagnostics (full determinant sampling)
 # -------------------------------------------------------------------
 @testset "check_T_system: collocation diagnostics" begin
 
-    # 25. Collocation-based E-system diagnostic: monomials should pass.
+    # 25. Collocation-based T-system diagnostic: monomials should pass.
     @testset "monomials on [0, 1]" begin
         setprecision(BigFloat, 64)
         a, b = BigFloat(0), BigFloat(1)
@@ -719,7 +719,7 @@ end
         a, b = BigFloat(0), BigFloat(1)
 
         # {1, x, x} is linearly dependent, so the collocation determinant
-        # must vanish and the sampled E-system check should fail.
+        # must vanish and the sampled T-system check should fail.
         funs = [x -> one(x),
                 x -> x,
                 x -> 2*x - one(x)]
@@ -735,5 +735,42 @@ end
 
         @test !result.sampled_pass
         @test result.sign_change_detected || result.near_zero_detected
+    end
+
+    # 28. Clustered tuples should not blow up the normalized determinant for a
+    #     well-conditioned exponential-polynomial T-system.
+    @testset "clustered exponential-polynomial basis is stable" begin
+        setprecision(BigFloat, 80)
+        a, b = big"0", big"1"
+        n = 4
+
+        cheb = ChebyshevT(n + 1) → (a..b)
+        poly_funs = [x -> BasisFunctions.unsafe_eval_element(cheb, j, x)
+                     for j in 1:n+1]
+        poly_derivs = [x -> BasisFunctions.unsafe_eval_element_derivative(cheb, j, x, 1)
+                       for j in 1:n+1]
+
+        exp_funs = [x -> BasisFunctions.unsafe_eval_element(cheb, j, x) * exp(x)
+                    for j in 1:n]
+        exp_derivs = [x -> begin
+                          T_val = BasisFunctions.unsafe_eval_element(cheb, j, x)
+                          T_der = BasisFunctions.unsafe_eval_element_derivative(cheb, j, x, 1)
+                          (T_der + T_val) * exp(x)
+                      end
+                      for j in 1:n]
+
+        funs = vcat(poly_funs, exp_funs, x -> exp(2x))
+        fun_derivs = vcat(poly_derivs, exp_derivs, x -> 2exp(2x))
+        basis = quadbasis(funs, fun_derivs, a, b)
+
+        result = redirect_stderr(devnull) do
+            check_T_system(basis; num_tuples=200, rng=MersenneTwister(1234),
+                           verbose=false)
+        end
+
+        @test result.sampled_pass
+        @test !result.sign_change_detected
+        @test !result.near_zero_detected
+        @test result.max_abs_normalized_det < big"1e-3"
     end
 end
