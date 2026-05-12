@@ -190,7 +190,7 @@ just the final call to `compute_gauss_rule`. See the following example:
 
 ```julia
 using BasisFunctions, DomainSets, GeneralizedGauss
-import GeneralizedGauss: solver_tolerance, canonical_lost_digits, lobatto_lost_digits
+import GeneralizedGauss: solver_tolerance, canonical_lost_digits, principal_lost_digits, lobatto_lost_digits
 
 newton_tol_digits = 30          # Newton residual target: 10^-30
 working_digits = 32             # working precision
@@ -200,6 +200,7 @@ setprecision(BigFloat, working_digits; base=10)
 # Optional: tighten or loosen the nonlinear solver tolerance explicitly.
 solver_tolerance(::Type{BigFloat}) = BigFloat(10)^(-newton_tol_digits)
 canonical_lost_digits(::Type{BigFloat}) = 2
+principal_lost_digits(::Type{BigFloat}) = 0
 lobatto_lost_digits(::Type{BigFloat}) = 2
 
 a = BigFloat(0)
@@ -230,13 +231,13 @@ Practical notes:
   which preserves the `BigFloat` precision, but may lose some digits of
   precision through the ill-conditioned matrix inversion.
 
-By default, `GeneralizedGauss` uses `eps(BigFloat)` as the Newton solver
+By default, `GeneralizedGauss` uses `10*eps(BigFloat)` as the Newton solver
 tolerance, so overriding `solver_tolerance(::Type{BigFloat})` is optional.
 Intermediate canonical solves use a lost-digits acceptance tolerance of 2
 decimal digits above `ftol`; override it with
 `canonical_lost_digits(::Type{T})` or the `canonical_lost_digits=...` keyword.
-Final Gauss-Lobatto solves use `lobatto_lost_digits(::Type{T})` or
-`lobatto_lost_digits=...` analogously.
+Principal and final Gauss-Lobatto solves use `principal_lost_digits` and
+`lobatto_lost_digits` analogously; principal defaults to 0 digits.
 For bases returned by `orthogonalize_basis`, the resolved value is enlarged to
 at least `ceil(digits_lost/2)`, where `digits_lost` is the decimal digit-loss
 estimate printed by orthogonalization.
