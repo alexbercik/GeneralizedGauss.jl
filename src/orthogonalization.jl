@@ -1,53 +1,5 @@
 
 """
-    gauss_legendre(n, ::Type{T}=BigFloat) where T
-
-Compute `n`-point Gauss-Legendre quadrature nodes and weights on `[-1, 1]`
-in arithmetic type `T`.  Uses Newton iteration on the three-term Legendre
-recurrence, which works natively with `BigFloat` (or any `AbstractFloat`).
-"""
-function gauss_legendre(n::Int, ::Type{T}=BigFloat) where T
-    nodes   = zeros(T, n)
-    weights = zeros(T, n)
-    m = (n + 1) ÷ 2          # number of non-negative roots (symmetry)
-
-    for i in 1:m
-        # Tricomi initial guess
-        x = cos(T(π) * (4i - 1) / (4n + 2))
-
-        # Newton iterations to find the root of P_n
-        for _ in 1:200
-            P_prev, P_curr = one(T), x
-            for k in 2:n
-                P_next = ((2k - 1) * x * P_curr - (k - 1) * P_prev) / T(k)
-                P_prev, P_curr = P_curr, P_next
-            end
-            # P_curr = P_n(x),  P_prev = P_{n-1}(x)
-            dP = T(n) * (x * P_curr - P_prev) / (x^2 - 1)
-            δ  = P_curr / dP
-            x -= δ
-            abs(δ) <= 10 * eps(T) && break
-        end
-
-        # Recompute P'_n at the converged root for the weight formula
-        P_prev, P_curr = one(T), x
-        for k in 2:n
-            P_next = ((2k - 1) * x * P_curr - (k - 1) * P_prev) / T(k)
-            P_prev, P_curr = P_curr, P_next
-        end
-        dP = T(n) * (x * P_curr - P_prev) / (x^2 - 1)
-
-        w = T(2) / ((1 - x^2) * dP^2)
-
-        nodes[n + 1 - i] =  x;   weights[n + 1 - i] = w
-        nodes[i]          = -x;   weights[i]          = w
-    end
-
-    nodes, weights
-end
-
-
-"""
     gram_matrix(basis::Dictionary, quad_order::Int; measure=nothing)
 
 Gram matrix ``G_{ij} = \\int_a^b \\varphi_i(x)\\,\\varphi_j(x)\\,w(x)\\,dx``
@@ -79,7 +31,7 @@ function gram_matrix(basis::Dictionary, quad_order::Int; measure=nothing)
 
     # Evaluate all basis functions at quadrature points
     Φ = zeros(T, n, quad_order)
-    for i in 1:n, k in 1:quad_order
+    for k in 1:quad_order, i in 1:n
         Φ[i, k] = funeval(basis, i, qnodes[k])
     end
 

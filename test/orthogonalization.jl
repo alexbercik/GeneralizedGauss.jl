@@ -314,7 +314,7 @@ end
 end
 
 @testset "Ill-conditioned orthogonalization warning mentions downstream quadrature" begin
-    N = 8
+    N = 9
     a = 0.0
     b = 1.0
 

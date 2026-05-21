@@ -141,6 +141,18 @@ where:
 - `fun_derivs[i](x)` evaluates its first derivative,
 - `[a,b]` is the support interval.
 
+For a mapped Legendre polynomial basis, this package provides function vectors
+that directly support both Float64 and BigFloat types:
+
+```julia
+funs, fun_derivs = legendre_functions(n, a, b) 
+# n is the number of basis functions, n=p+1 where p is the max polynomial degree
+basis = quadbasis(funs, fun_derivs, a, b)
+
+# Equivalent shorthand:
+basis = legendre_basis(n, a, b)
+```
+
 For custom bases:
 - moments can still be calculated through the generic `BasisFunctions` 
   integration fallback,
@@ -219,9 +231,9 @@ Practical notes:
   `ChebyshevT(10) → (0.0..1.0)` keeps the support in `Float64`, which can cap
   basis evaluation accuracy near `Float64` precision. The correct approach is
   `ChebyshevT(10) → (a..b)`.
-- HOWEVER, the default bases `ChebyshevT`, `Lagrange`, etc. often do not 
-  natively support `BigFloat`. Therefore, I suggest always defining a custom
-  basis when working with a desired precision.
+- HOWEVER, the default bases `ChebyshevT`, `Lagrange`, etc. from 
+  BasisFunctions.jl often do not natively support `BigFloat`. Therefore,
+  I suggest always defining a basis when working with a desired precision.
 - If you pass explicit `moments`, those moments should also be computed/stored
   in `BigFloat`. Otherwise, the automatically computed moments should preserve
   `BigFloat` precision (as long as you use a custom basis).
@@ -363,6 +375,12 @@ orth_moments = T_mat * moments
 
 w, x = compute_gauss_rule(orth_basis, orth_moments)
 ```
+
+Note that it is smarter in this case to simply use
+```julia
+basis = legendre_basis(n, -1.0, 1.0)
+```
+
 
 ### A manual basis with a custom weighted measure
 

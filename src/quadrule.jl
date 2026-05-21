@@ -95,8 +95,17 @@ function residual!(result, sys::QuadRuleSystem, newton_x)
 end
 
 function residual!(result, sys::QuadRuleSystem, w, x, basis, moments)
-    for (i,ϕ) in enumerate(basis)
-        result[i] =  apply_quad(w, x, ϕ) - moments[i]
+    n = length(basis)
+    @inbounds for j in 1:n
+        result[j] = -moments[j]
+    end
+
+    @inbounds for i in eachindex(w)
+        wi = w[i]
+        xi = x[i]
+        for j in 1:n
+            result[j] += wi * funeval(basis, j, xi)
+        end
     end
     result
 end
@@ -261,14 +270,14 @@ function jacobian!(J, sys::QuadRuleFreePoints, w, x, basis)
 
     # We are computing the derivative of \sum_{i=1}^l w_i ϕ_j(x_i) wrt w_i and x_i
     # - First the derivatives with respect to the weight w[i]
-    for j in 1:length(basis)
-        for i in 1:l
+    for i in 1:l
+        for j in 1:length(basis)
             J[j,i] = funeval(basis, j, x[i])
         end
     end
     # - Then the weight times the derivatives of the basis functions
-    for j in 1:length(basis)
-        for i in 1:l
+    for i in 1:l
+        for j in 1:length(basis)
             J[j,l+i] = w[i] * funeval_deriv(basis, j, x[i])
         end
     end
@@ -283,14 +292,14 @@ function jacobian!(J, sys::QuadRuleFixedPoints, w, x, basis)
     # We are computing the derivative of \sum_{i=1}^l w_i ϕ_j(x_i) wrt w_i and x_i
     # as before, but now some of the x_i's are fixed and we have to skip them.
     # - First the derivatives with respect to the weight w[i]: same as before
-    for j in 1:length(basis)
-        for i in 1:l
+    for i in 1:l
+        for j in 1:length(basis)
             J[j,i] = funeval(basis, j, x[i])
         end
     end
     # - Then the weight times the derivatives of the basis functions
-    for j in 1:length(basis)
-        for (k,i) in enumerate(sys.free_idxs)
+    for (k,i) in enumerate(sys.free_idxs)
+        for j in 1:length(basis)
             J[j,l+k] = w[i] * funeval_deriv(basis, j, x[i])
         end
     end
