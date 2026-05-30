@@ -123,6 +123,17 @@ const GRR3_W = [(16 - sqrt(6)) / 18, (16 + sqrt(6)) / 18, 2 / 9]
     w_brent, x_brent = compute_gauss_rule(basis_no_deriv, moments; solver=:brent)
     assert_rule_matches(w_brent, x_brent, [2.0], [0.0])
 
+    shifted_moments = [2.0, 1.0]
+    redirect_stdout(devnull) do
+        @test_throws ErrorException compute_gauss_rule(
+            basis_newton, shifted_moments; maxiter=0, principal_lost_digits=0)
+    end
+    w_lost, x_lost = compute_gauss_rule(
+        basis_newton, shifted_moments; maxiter=0, principal_lost_digits=400)
+    @test isfinite(first(x_lost))
+    @test isfinite(first(w_lost))
+    @test abs(2 * first(x_lost) - 1) > 1e-4
+
     w_fallback, x_fallback =
         @test_logs (:warn, r"No analytic first derivatives") compute_gauss_rule(
             basis_no_deriv, moments)

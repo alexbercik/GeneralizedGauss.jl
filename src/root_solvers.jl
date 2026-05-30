@@ -174,8 +174,11 @@ function _brent_root(f, a, b, fa, fb; x_tol, f_tol, maxiter::Int=500, kwargs...)
         tol = 2 * eps(b) + x_tol / 2
         xm = (c - b) / 2
 
-        if abs(xm) <= tol || abs(fb) <= f_tol
+        if abs(fb) <= f_tol
             return true, b, fb
+        end
+        if abs(xm) <= tol
+            return false, b, fb
         end
 
         if abs(e) >= tol && abs(fa) > abs(fb)
@@ -304,8 +307,11 @@ function _scalar_newton_root(f, df, a, b, x; x_tol, f_tol,
         end
 
         # -- Check for convergence
-        if abs(f_new) <= f_tol || abs(x_new - x) <= x_tol
+        if abs(f_new) <= f_tol
             return true, x_new, f_new
+        end
+        if abs(x_new - x) <= x_tol
+            return false, x_new, f_new
         end
 
         x = x_new
