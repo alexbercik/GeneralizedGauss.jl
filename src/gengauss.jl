@@ -303,6 +303,30 @@ function _require_principal_convergence(label, location, converged, diag,
     error("$(label) Newton solve failed. Consider increasing principal_lost_digits if residual is still acceptable.")
 end
 
+function _has_first_derivatives(dict::Dictionary)
+    x_probe = (supportleft(dict) + supportright(dict)) / 2
+    all(i -> maybe_funeval_deriv(dict, i, x_probe, 1) !== nothing,
+        1:length(dict))
+end
+
+function _resolve_gauss_solver(dict::Dictionary, solver::Symbol)
+    if solver == :newton && !_has_first_derivatives(dict)
+        @warn("No analytic first derivatives were provided for this basis. " *
+              "Falling back to the derivative-free solver scaffold; only " *
+              "the one-point rule is implemented so far, and the " *
+              "multidimensional fallback is TBD.")
+        return :fallback
+    end
+    solver
+end
+
+function _require_multidimensional_solver_available(solver::Symbol, n::Int)
+    n <= 2 && return nothing
+    solver == :newton && return nothing
+    error("compute_gauss_rules: solver=$(solver) is implemented only for the one-point rule so far. " *
+          "The derivative-free multidimensional continuation fallback is TBD.")
+end
+
 function solve_system_with_diagnostics(rule, w0, x0; verbose=false, options...)
     x_init = quad_to_newton(rule, w0, x0)
     F!(Fx, x) = residual!(Fx, rule, x)
@@ -328,26 +352,52 @@ supportright(dict) = rightendpoint(support(dict))
 
 function compute_one_point_rule(dict, moments; verbose=false,
         config::GaussRuleConfig=GaussRuleConfig(),
-        principal_lost_digits::Real=0, options...)
+        principal_lost_digits::Real=0, solver::Symbol=:newton, options...)
     @assert length(dict) == 2
     @assert length(moments) == 2
 
-    a_left = supportleft(dict)
-    b_right = supportright(dict)
-    x0 = (a_left + b_right) / 2
-    w0 = moments[1] / funeval(dict, 1, x0)
-    # For the one-point rule, we want to always use LowerPrincipalOdd (free point, not fixed endpoints)
-    # regardless of config.add_endpoint, so create a temporary config that forces this
-    one_point_config = GaussRuleConfig(; principal=config.principal, add_endpoint=:right)
-    converged, w, x, diag = compute_lower_principal_representation(dict, moments, w0, x0;
-        verbose, config=one_point_config, diagnostics=true, options...)
-    if !converged
-        converged, w, x, diag = compute_lower_principal_representation(dict, moments, w, x;
-            verbose, config=one_point_config, diagnostics=true, options...)
+    a = supportleft(dict)
+    b = supportright(dict)
+    c1, c2 = moments[1], moments[2]
+    if c1 == zero(c1)
+        error("Degenerate one-point rule: first moment is zero, so c₂/c₁ is undefined.")
     end
-    _require_principal_convergence("one-point principal", first(x),
-        converged, diag, principal_lost_digits; verbose)
-    w, x
+
+    x0 = (a + b) / 2
+    f = x -> c1 * funeval(dict, 2, x) - c2 * funeval(dict, 1, x)
+    base_tol = solver_tolerance(typeof(x0))
+    x_tol = base_tol * max(one(x0), abs(a), abs(b))
+    f_tol = base_tol * max(one(x0), maximum(abs, moments))
+
+    if solver == :newton
+        df = x -> c1 * funeval_deriv(dict, 2, x) -
+                  c2 * funeval_deriv(dict, 1, x)
+        converged, x, fx = _scalar_newton_root(f, df, a, b, x0;
+            x_tol, f_tol, verbose, options...)
+        if !converged
+            verbose && println("WARNING: one-point scalar safeguarded Newton did not " *
+                "converge; falling back to Brent root finding.")
+            converged, x, fx = _brent_root_on_interval(f, a, b, x;
+                x_tol, f_tol, options...)
+        end
+    else
+        converged, x, fx = _brent_root_on_interval(f, a, b, x0;
+            x_tol, f_tol, options...)
+    end
+
+    if !converged
+        diag = (; residual_norm=abs(fx), tolerance=f_tol,
+                ratio=abs(fx) / f_tol)
+        _require_principal_convergence("one-point scalar", x,
+            false, diag, principal_lost_digits; verbose)
+    end
+
+    f1x = funeval(dict, 1, x)
+    if f1x == zero(f1x)
+        error("Degenerate one-point rule: f₁(x) is zero at x=$(x), so the weight is undefined.")
+    end
+    w = moments[1] / f1x
+    [w], [x]
 end
 
 function compute_two_point_rule(dict, moments; options...)
@@ -1113,7 +1163,7 @@ end
         add_endpoint = nothing, max_adaptive_steps = 32,
         canonical_lost_digits = nothing,
         principal_lost_digits = nothing,
-        lobatto_lost_digits = nothing, options...)
+        lobatto_lost_digits = nothing, solver = :newton, options...)
 
 Compute the sequence of generalized Gaussian quadrature rules associated with
 `dict`. Returns the final rule together with all intermediate principal
@@ -1181,6 +1231,10 @@ Keyword arguments:
 - `principal_lost_digits`: same lost-digit allowance for non-Lobatto principal
   Newton solves. Default `nothing` uses `principal_lost_digits(T)`, which is 0
   unless overridden, then applies the orthogonalization floor.
+- `solver`: nonlinear solver selector. `:newton` is the default and current
+  multidimensional implementation. If no first derivatives are available, the
+  code warns and switches to the derivative-free fallback scaffold. At present
+  that fallback is implemented only for the initial one-point rule.
 - `options`: forwarded to the nonlinear solver used at every refinement step.
 """
 function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = nothing;
@@ -1190,8 +1244,11 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
         canonical_lost_digits = nothing,
         principal_lost_digits = nothing,
         lobatto_lost_digits = nothing,
+        solver::Symbol = :newton,
         options...)
     n = length(dict)
+    solver_resolved = _resolve_gauss_solver(dict, solver)
+    _require_multidimensional_solver_available(solver_resolved, n)
     add_endpoint_resolved = resolve_add_endpoint(principal, add_endpoint)
     # Automatically determine stop_at_odd_gauss based on dict length
     # If dict is even, compute full sequence (stop_at_odd_gauss = false)
@@ -1258,7 +1315,7 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
     verbose && println("Computing initial one point rule")
     w, x = compute_one_point_rule(dict[1:2], moments[1:2];
         verbose, config, principal_lost_digits=principal_lost_digits_resolved,
-        options...)
+        solver=solver_resolved, options...)
     verbose && println("One point quadrature rule is: ", x, ", ", w)
 
     # Add initial one-point rule as second checkpoint

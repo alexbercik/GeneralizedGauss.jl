@@ -110,6 +110,32 @@ const GLL4_W = [1 / 6, 5 / 6, 5 / 6, 1 / 6]
 const GRR3_X = [(-1 - sqrt(6)) / 5, (-1 + sqrt(6)) / 5, 1.0]
 const GRR3_W = [(16 - sqrt(6)) / 18, (16 + sqrt(6)) / 18, 2 / 9]
 
+@testset "One-point scalar solve" begin
+    funs = Function[x -> one(x), x -> x]
+    fun_derivs = Function[x -> zero(x), x -> one(x)]
+    moments = [2.0, 0.0]
+
+    basis_newton = quadbasis(funs, fun_derivs, -1.0, 1.0)
+    w_newton, x_newton = compute_gauss_rule(basis_newton, moments)
+    assert_rule_matches(w_newton, x_newton, [2.0], [0.0])
+
+    basis_no_deriv = quadbasis(funs, nothing, -1.0, 1.0)
+    w_brent, x_brent = compute_gauss_rule(basis_no_deriv, moments; solver=:brent)
+    assert_rule_matches(w_brent, x_brent, [2.0], [0.0])
+
+    w_fallback, x_fallback =
+        @test_logs (:warn, r"No analytic first derivatives") compute_gauss_rule(
+            basis_no_deriv, moments)
+    assert_rule_matches(w_fallback, x_fallback, [2.0], [0.0])
+
+    higher_funs = Function[x -> one(x), x -> x, x -> x^2]
+    higher_basis_no_deriv = quadbasis(higher_funs, nothing, -1.0, 1.0)
+    @test_logs (:warn, r"No analytic first derivatives") begin
+        @test_throws ErrorException compute_gauss_rule(
+            higher_basis_no_deriv, [2.0, 0.0, 2 / 3])
+    end
+end
+
 @testset "Known polynomial quadratures" begin
     @testset "3-point Gauss-Legendre from polynomial bases" begin
         bases = (
