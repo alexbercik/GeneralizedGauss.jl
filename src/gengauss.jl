@@ -400,12 +400,11 @@ function compute_one_point_rule(dict, moments; verbose=false,
     [w], [x]
 end
 
-function compute_two_point_rule(dict, moments; options...)
+function compute_two_point_rule(dict, moments,
+        a = supportleft(dict), b = supportright(dict); options...)
     @assert length(dict) == 2
     @assert length(moments) == 2
 
-    a = supportleft(dict)
-    b = supportright(dict)
     x = [a, b]
 
     u0a = funeval(dict, 1, a)
@@ -427,6 +426,28 @@ function compute_two_point_rule(dict, moments; options...)
     w, x
 end
 
+function _quad_rule_diagnostic(dict, moments, w, x)
+    residual_norm = zero(abs(moments[1]))
+    for j in 1:length(dict)
+        rj = -moments[j]
+        for i in eachindex(w)
+            rj += w[i] * funeval(dict, j, x[i])
+        end
+        residual_norm = max(residual_norm, abs(rj))
+    end
+    tol = solver_tolerance(typeof(residual_norm))
+    (; residual_norm, tolerance=tol, ratio=residual_norm / tol)
+end
+
+function _compute_two_point_canonical_representation(dict, moments, a, b;
+        diagnostics::Bool=false, options...)
+    w, x = compute_two_point_rule(dict, moments, a, b; options...)
+    if diagnostics
+        return true, w, x, _quad_rule_diagnostic(dict, moments, w, x)
+    end
+    true, w, x
+end
+
 
 function compute_upper_canonical_representation(dict, moments, xi, w0, x0;
         verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
@@ -434,6 +455,21 @@ function compute_upper_canonical_representation(dict, moments, xi, w0, x0;
     @assert length(moments) == length(dict)
 
     _gengauss_debug_println("DEBUG: compute_upper_canonical_representation, even number of basis functions, (", length(dict), ")")
+
+    if length(dict) == 2
+        try
+            return _compute_two_point_canonical_representation(
+                dict, moments, xi, supportright(dict);
+                diagnostics, options...)
+        catch e
+            if e isa InterruptException
+                rethrow()
+            end
+            println("ERROR THROWN at $(xi) in computation of two-point upper canonical")
+            @show e
+            return diagnostics ? (false, w0, x0, _newton_exception_diagnostic(e)) : (false, w0, x0)
+        end
+    end
 
     if iseven(length(dict))
         # even number of (n+1) basis functions (odd n)
@@ -443,6 +479,7 @@ function compute_upper_canonical_representation(dict, moments, xi, w0, x0;
     else
         error("TODO")
     end
+
     try
         if diagnostics
             solve_system_with_diagnostics(rule, w0, x0; verbose, options...)
@@ -717,6 +754,23 @@ function compute_lower_canonical_representation(dict, moments, xi, w0, x0;
         verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
         diagnostics::Bool=false, options...)
     @assert length(moments) == length(dict)
+
+    if length(dict) == 2
+        try
+            a, b = config.add_endpoint == :right ?
+                (xi, supportright(dict)) :
+                (supportleft(dict), xi)
+            return _compute_two_point_canonical_representation(
+                dict, moments, a, b; diagnostics, options...)
+        catch e
+            if e isa InterruptException
+                rethrow()
+            end
+            println("ERROR THROWN at $(xi) in computation of two-point lower canonical")
+            @show e
+            return diagnostics ? (false, w0, x0, _newton_exception_diagnostic(e)) : (false, w0, x0)
+        end
+    end
 
     if isodd(length(dict))
         _gengauss_debug_println("DEBUG: compute_lower_canonical_representation, odd number of basis functions, (", length(dict), ")")
@@ -1311,7 +1365,8 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
 
     if n == 2 && config.principal == :upper
         verbose && println("Computing two-point Lobatto rule")
-        w, x = compute_two_point_rule(dict[1:2], moments[1:2])
+        w, x = compute_two_point_rule(dict[1:2], moments[1:2],
+            left_support, right_support)
         verbose && println("Two point quadrature rule is: ", x, ", ", w)
         push!(xi_checkpoints, xi_extractor(x))
         push!(w_checkpoints, w)
