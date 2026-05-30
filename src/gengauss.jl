@@ -16,8 +16,7 @@ function _gengauss_debug_println(args...; kwargs...)
     return nothing
 end
 
-Fk(w, x, u2k, c2k) = apply_quad(w, x, u2k) - c2k
-Gk(w, x, u2kp1, c2kp1) = apply_quad(w, x, u2kp1) - c2kp1
+eval_moment_error(w, x, u, c) = apply_quad(w, x, u) - c
 
 struct GaussRuleConfig
     principal::Symbol
@@ -116,75 +115,6 @@ function default_representation_steps(principal::Symbol, add_endpoint::Symbol, e
         error("default_representation_steps: unknown add_endpoint=$(add_endpoint) (expected :left or :right)")
     end
     steps
-end
-
-function ismonotonic(values)
-    if length(values) <= 1
-        return true
-    end
-    if first(values) > last(values)
-        reduce(&, values[1:end-1] .> values[2:end])
-    else
-        reduce(&, values[1:end-1] .< values[2:end])
-    end
-end
-
-function sweep_indices(n, direction::Symbol)
-    if direction == :left_to_right
-        collect(1:n)
-    elseif direction == :right_to_left
-        collect(n:-1:1)
-    else
-        error("Unknown sweep direction $(direction). Use :left_to_right or :right_to_left.")
-    end
-end
-
-function seeds_for_endpoint(target, sweep_start, sweep_end, start_idx, end_idx, pts, w, x, start_seed, end_seed)
-    if target == sweep_start
-        if start_seed === nothing
-            return w[:,start_idx], x[:,start_idx]
-        end
-        return start_seed
-    elseif target == sweep_end
-        if end_seed === nothing
-            return w[:,end_idx], x[:,end_idx]
-        end
-        return end_seed
-    elseif target == pts[start_idx]
-        return w[:,start_idx], x[:,start_idx]
-    elseif target == pts[end_idx]
-        return w[:,end_idx], x[:,end_idx]
-    else
-        return w[:,start_idx], x[:,start_idx]
-    end
-end
-
-function refine_interval_from_sweep(a, b, pts2, w, x, order, Fvals_sweep, direction, start_seed, end_seed)
-    start_idx = order[1]
-    end_idx = order[end]
-    start_pt = pts2[start_idx]
-    end_pt = pts2[end_idx]
-    start_val = Fvals_sweep[1]
-    end_val = Fvals_sweep[end]
-    decreasing = start_val > end_val
-    sweep_start = direction == :left_to_right ? a : b
-    sweep_end = direction == :left_to_right ? b : a
-    if start_val > 0
-        if decreasing
-            a_new, b_new = sort((end_pt, sweep_end))
-        else
-            a_new, b_new = sort((sweep_start, start_pt))
-        end
-    else
-        if decreasing
-            a_new, b_new = sort((sweep_start, start_pt))
-        else
-            a_new, b_new = sort((end_pt, sweep_end))
-        end
-    end
-    wa_new, xa_new = seeds_for_endpoint(a_new, sweep_start, sweep_end, start_idx, end_idx, pts2, w, x, start_seed, end_seed)
-    wb_new, xb_new = seeds_for_endpoint(b_new, sweep_start, sweep_end, start_idx, end_idx, pts2, w, x, start_seed, end_seed)
-    a_new, b_new, wa_new, xa_new, wb_new, xb_new
 end
 
 function _newton_diagnostic(rule, newton_x, tol)
@@ -497,23 +427,6 @@ function compute_upper_canonical_representation(dict, moments, xi, w0, x0;
 end
 
 
-function compute_many_upper_canonical_representation(dict, moments, w0, x0, pts;
-        verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
-        sweep_direction::Union{Symbol,Nothing}=nothing,
-        max_adaptive_steps::Int=32, initial_xi=nothing,
-        canonical_lost_digits=nothing, options...)
-
-    initial_xi_resolved = initial_xi === nothing ?
-        (config.add_endpoint == :right ? first(x0) : x0[end-1]) :
-        initial_xi
-    lost_digits = _resolve_canonical_lost_digits(dict,
-        canonical_lost_digits, _lost_digits_policy_type(dict, moments))
-    _adaptive_canonical_sweep(compute_upper_canonical_representation,
-        "upper canonical", dict, moments, w0, x0, pts, initial_xi_resolved;
-        verbose, config, sweep_direction, max_adaptive_steps,
-        canonical_lost_digits=lost_digits, options...)
-end
-
 function estimate_upper_canonical_representation(dict, moments, a, b, w0, x0;
         verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
         sweep_direction::Union{Symbol,Nothing}=nothing,
@@ -526,206 +439,178 @@ function estimate_upper_canonical_representation(dict, moments, a, b, w0, x0;
     @assert length(x0) == l+1
 
     verbose && println("Estimating upper canonical representation, xi between $(a) and $(b)")
-    n = 8
-    estimate_upper_canonical_representation(dict, moments, a, b, w0, x0, n;
-        verbose, config, sweep_direction, max_adaptive_steps,
-        canonical_lost_digits, options...)
-end
 
-function interpolate_starting_values(a, b, p, w_left, x_left, w_right, x_right)
-    θ = (p-a)/(b-a)
-    w0 = w_left + θ * (w_right-w_left)
-    x0 = x_left + θ * (x_right-x_left)
-    w0, x0
-end
-
-switches_sign(values) = ! (all(values .> 0) || all(values .< 0))
-
-function _canonical_midpoint(x_good, x_failed)
-    x_good + (x_failed - x_good) / 2
-end
-
-function _push_canonical_sample!(pts_done::Vector{T},
-        w_done::Vector{Vector{T}}, x_done::Vector{Vector{T}},
-        xi, w, x) where {T}
-    push!(pts_done, xi)
-    push!(w_done, T.(w))
-    push!(x_done, T.(x))
-    nothing
-end
-
-function _canonical_sample_matrix(cols::Vector{Vector{T}}, nrows::Int,
-        perm::Vector{Int}) where {T}
-    M = zeros(T, nrows, length(perm))
-    for (j, idx) in enumerate(perm)
-        M[:,j] = cols[idx]
-    end
-    M
-end
-
-function _adaptive_canonical_sweep(compute_one, label, dict, moments, w0, x0,
-        pts, initial_xi;
-        verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
-        sweep_direction::Union{Symbol,Nothing}=nothing,
-        max_adaptive_steps::Int=32,
-        canonical_lost_digits::Real=2, options...)
-    n = length(pts)
-    T = promote_type(eltype(w0), eltype(x0), eltype(pts))
-    pts_done = T[]
-    w_done = Vector{Vector{T}}()
-    x_done = Vector{Vector{T}}()
-    dir = sweep_direction !== nothing ? sweep_direction : get_direction(config)
-    order = sweep_indices(n, dir)
-
-    _gengauss_debug_println("w0: ", w0)
-    _gengauss_debug_println("x0: ", x0)
-    _gengauss_debug_println("pts: ", pts)
-    _gengauss_debug_println("order: ", order)
-    _gengauss_debug_println("initial_xi: ", initial_xi)
-
-    xi_prev = initial_xi
-    w_prev, x_prev = w0, x0
-    for i in order
-        target = pts[i]
-        trial = target
-        adaptive_steps = 0
-        reached_target = false
-        last_diagnostic = nothing
-
-        while true
-            converged, w1, x1, last_diagnostic =
-                compute_one(dict, moments, trial, w_prev, x_prev;
-                    verbose, config, diagnostics=true, options...)
-
-            lost_digits_converged = !converged &&
-                _canonical_lost_digits_accepts(last_diagnostic,
-                    canonical_lost_digits)
-            if lost_digits_converged && verbose
-                _warn_canonical_lost_digits_acceptance(label, trial,
-                    last_diagnostic, canonical_lost_digits)
-            end
-
-            if converged || lost_digits_converged
-                _push_canonical_sample!(pts_done, w_done, x_done, trial, w1, x1)
-                w_prev, x_prev = w1, x1
-                xi_prev = trial
-                if trial == target
-                    reached_target = true
-                    break
-                end
-                trial = target
-                continue
-            end
-
-            adaptive_steps += 1
-            if adaptive_steps > max_adaptive_steps
-                break
-            end
-
-            next_trial = _canonical_midpoint(xi_prev, trial)
-            if next_trial == xi_prev || next_trial == trial
-                break
-            end
-
-            _gengauss_debug_println(label, ": retrying at ", next_trial,
-                " after failed target ", trial,
-                " from last converged xi ", xi_prev)
-            trial = next_trial
-        end
-
-        if !reached_target && verbose
-            println("Many $(label): not converged for $(target) [$(_format_newton_diagnostic(last_diagnostic))]")
-        end
-        reached_target || break
-    end
-
-    if isempty(pts_done)
-        return false, zeros(T, length(w0), 0), zeros(T, length(x0), 0), T[]
-    end
-
-    perm = sortperm(pts_done)
-    w = _canonical_sample_matrix(w_done, length(w0), perm)
-    x = _canonical_sample_matrix(x_done, length(x0), perm)
-    true, w, x, pts_done[perm]
-end
-
-function estimate_upper_canonical_representation(dict, moments, a, b, w0, x0, n;
-        verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
-        sweep_direction::Union{Symbol,Nothing}=nothing,
-        max_adaptive_steps::Int=32, canonical_lost_digits=nothing,
-        options...)
-    if n > 1024
-        println(
-            "estimate_upper_canonical_representation: canonical interval refinement is too small ",
-            "(adaptive sweep grid parameter n=", n,
-            " exceeds maximum 1024 without locating a suitable bracket).",
-        )
-        println(
-            "Either check that the quadrature basis is correct, or increase ",
-            "the canonical_lost_digits parameter.",
-        )
-        if !verbose
-            println(
-                "Re-run with verbose=true (e.g. compute_gauss_rule(...; verbose=true)) ",
-                "to print Newton and sweep diagnostics.",
-            )
-        end
-    end
-    @assert n <= 1024
-
-    dir = sweep_direction !== nothing ? sweep_direction : get_direction(config)
-
-    pts = collect(range(a, b, length=n+2)[2:end-1])
-    # end_seed will be computed from refine_interval_from_sweep results if needed
-    end_seed = nothing
-
-    initial_xi = dir == :left_to_right ? a : b
     lost_digits = _resolve_canonical_lost_digits(dict,
         canonical_lost_digits, _lost_digits_policy_type(dict, moments))
-    some_converged, w, x, pts2 = compute_many_upper_canonical_representation(
-        dict[1:end-1], moments[1:end-1], w0, x0, pts;
-        verbose, config, sweep_direction, max_adaptive_steps, initial_xi,
+
+    seed = _estimate_canonical_representation_by_sweep(
+        compute_upper_canonical_representation, "Upper canonical",
+        dict, moments, a, b, w0, x0;
+        verbose, config, sweep_direction, max_adaptive_steps,
         canonical_lost_digits=lost_digits, options...)
-    if some_converged
-        if verbose && length(pts2) != length(pts)
-            println("Upper canonical: collected $(length(pts2)) converged samples for $(length(pts)) requested grid points")
-        end
-        Fvals = [Fk(w[:,i],x[:,i],dict[end], moments[end]) for i in 1:size(w,2)]
-        order = sweep_indices(length(Fvals), dir)
-        Fvals_sweep = Fvals[order]
-        if verbose && !ismonotonic(Fvals_sweep)
-            println("Upper canonical: function Fk is not monotonic along $(dir) sweep but should be.")
-        end
-        @assert ismonotonic(Fvals_sweep) "Upper canonical Fk sweep $(dir) should be monotonic.\nFvals_sweep = $(Fvals_sweep)\npts = $(pts2)\nIf the above Fvals are close to monotonic, this may indicate insufficient\nBigFloat precision for the current basis and degree.\nConsider increasing extra_digits or using a better-conditioned basis (e.g. Chebyshev).\nIf they are very bad, this may indicate something wrong with the basis or the moments."
-        if switches_sign(Fvals_sweep)
-            if first(Fvals_sweep) > 0
-                I = findlast(Fvals_sweep .> 0)
-            else
-                I = findlast(Fvals_sweep .< 0)
-            end
-            left_idx = order[I]
-            right_idx = order[I+1]
-            pts2[left_idx], pts2[right_idx], w[:,left_idx], x[:,left_idx], w[:,right_idx], x[:,right_idx]
-        else
-            a_new, b_new, wa_new, xa_new, wb_new, xb_new =
-                refine_interval_from_sweep(a, b, pts2, w, x, order, Fvals_sweep, dir, (w0, x0), end_seed)
-            verbose && println("Upper canonical: refining from $((a,b)) to $((a_new,b_new)) in direction $(dir)")
-            # Select the appropriate seed based on sweep direction:
-            # the seed should come from the START of the sweep (where we have
-            # the known good solution).
-            if sweep_direction !== nothing
-                w0_new = dir == :left_to_right ? wa_new : wb_new
-                x0_new = dir == :left_to_right ? xa_new : xb_new
-            else
-                w0_new = config.add_endpoint == :left ? wa_new : wb_new
-                x0_new = config.add_endpoint == :left ? xa_new : xb_new
-            end
-            estimate_upper_canonical_representation(dict, moments, a_new, b_new, w0_new, x0_new, n; verbose, config, sweep_direction, max_adaptive_steps, canonical_lost_digits=lost_digits, options...)
-        end
-    else
-        verbose && println("Upper canonical: increasing n to $(2n)")
-        estimate_upper_canonical_representation(dict, moments, a, b, w0, x0, 2n; verbose, config, sweep_direction, max_adaptive_steps, canonical_lost_digits=lost_digits, options...)
+    if seed === nothing
+        error("Upper canonical sweep failed to locate a next-moment " *
+              "sign change within the adaptive sweep budget. Check the basis " *
+              "or increase max_adaptive_steps/canonical_lost_digits if the " *
+              "Newton residuals are acceptable.")
     end
+    seed
+end
+
+const _CANONICAL_SWEEP_INITIAL_SUBDIVISIONS = 9
+
+function _accept_canonical_step(compute_one, label, dict, moments, xi, w_seed, x_seed;
+        verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
+        canonical_lost_digits::Real=2, options...)
+    converged, w, x, diag =
+        compute_one(dict, moments, xi, w_seed, x_seed;
+            verbose, config, diagnostics=true, options...)
+    if converged
+        return true, w, x, diag
+    end
+
+    lost_digits_converged =
+        _canonical_lost_digits_accepts(diag, canonical_lost_digits)
+    if lost_digits_converged
+        verbose && _warn_canonical_lost_digits_acceptance(label, xi,
+            diag, canonical_lost_digits)
+        return true, w, x, diag
+    end
+
+    false, w, x, diag
+end
+
+function _try_canonical_step(compute_one, label, dict, moments, xi_prev, target,
+        w_prev, x_prev;
+        verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
+        max_adaptive_steps::Int=32, canonical_lost_digits::Real=2,
+        options...)
+    trial = target
+    last_diagnostic = nothing
+    for adaptive_step in 0:max_adaptive_steps
+        accepted, w, x, last_diagnostic =
+            _accept_canonical_step(compute_one, label, dict, moments, trial,
+                w_prev, x_prev; verbose, config, canonical_lost_digits,
+                options...)
+        accepted && return true, trial, w, x, last_diagnostic
+
+        adaptive_step == max_adaptive_steps && break
+
+        next_trial = xi_prev + (trial - xi_prev) / 2
+        if _canonical_x_stalled(next_trial, xi_prev) ||
+                _canonical_x_stalled(next_trial, trial)
+            break
+        end
+
+        _gengauss_debug_println(label, ": retrying at ", next_trial,
+            " after failed target ", trial,
+            " from last converged xi ", xi_prev)
+        trial = next_trial
+    end
+
+    verbose && println("$(label): not converged for $(target) " *
+        "[$(_format_newton_diagnostic(last_diagnostic))]")
+    false, trial, w_prev, x_prev, last_diagnostic
+end
+
+@inline function _canonical_x_stalled(xa, xb)
+    δ = abs(xb - xa)
+    ref = max(abs(xa), abs(xb), oneunit(xa))
+    δ <= 2 * eps(ref)
+end
+
+function _canonical_step_target(xi, sweep_end, dx, direction::Symbol)
+    if direction == :left_to_right
+        remaining = sweep_end - xi
+        step = dx >= remaining ? remaining / 2 : dx
+        xi + step
+    elseif direction == :right_to_left
+        remaining = xi - sweep_end
+        step = dx >= remaining ? remaining / 2 : dx
+        xi - step
+    else
+        error("Unknown sweep direction $(direction). Use :left_to_right or :right_to_left.")
+    end
+end
+
+function _update_canonical_trend(label, direction, xi_prev, xi_curr,
+        F_prev, F_curr, trend)
+    if F_curr == F_prev
+        error("$(label): next-moment residual stopped changing during " *
+              "$(direction) sweep at ξ=$(xi_curr). F_prev=$(F_prev), " *
+              "F_curr=$(F_curr).")
+    end
+
+    step_trend = F_curr > F_prev ? :increasing : :decreasing
+    if trend !== nothing && step_trend != trend
+        error("$(label): next-moment residual is not monotonic during " *
+              "$(direction) sweep between ξ=$(xi_prev) and ξ=$(xi_curr). " *
+              "F_prev=$(F_prev), F_curr=$(F_curr).")
+    end
+
+    step_trend
+end
+
+function _estimate_canonical_representation_by_sweep(compute_one, label,
+        dict, moments, a, b, w0, x0;
+        verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
+        sweep_direction::Union{Symbol,Nothing}=nothing,
+        max_adaptive_steps::Int=32, canonical_lost_digits::Real=2,
+        options...)
+    dir = sweep_direction !== nothing ? sweep_direction : get_direction(config)
+    sweep_start = dir == :left_to_right ? a : b
+    sweep_end = dir == :left_to_right ? b : a
+    interval = abs(sweep_end - sweep_start)
+    dx = interval / _CANONICAL_SWEEP_INITIAL_SUBDIVISIONS
+    dict_inner = dict[1:end-1] # -- we want to be exact for all but the last basis function & moment
+    moments_inner = moments[1:end-1] # -- the last moment will be used to determine the sign change
+
+    _gengauss_debug_println(label, ": sweep_start=", sweep_start,
+        ", sweep_end=", sweep_end, ", direction=", dir)
+    _gengauss_debug_println("w0: ", w0)
+    _gengauss_debug_println("x0: ", x0)
+
+    xi_prev = sweep_start
+    w_prev, x_prev = w0, x0
+    # -- initial moment error at previous principal representation (sweep start)
+    F_prev = eval_moment_error(w_prev, x_prev, dict[end], moments[end])
+    iszero(F_prev) &&
+        return w_prev, x_prev
+
+    trend = nothing
+    samples = 0
+    while true
+        target = _canonical_step_target(xi_prev, sweep_end, dx, dir)
+        if _canonical_x_stalled(xi_prev, target)
+            break
+        end
+
+        accepted, xi_curr, w_curr, x_curr, _ =
+            _try_canonical_step(compute_one, label, dict_inner,
+                moments_inner, xi_prev, target, w_prev, x_prev;
+                verbose, config, max_adaptive_steps,
+                canonical_lost_digits, options...)
+        accepted || return nothing
+        samples += 1
+
+        F_curr = eval_moment_error(w_curr, x_curr, dict[end], moments[end])
+        trend = _update_canonical_trend(label, dir, xi_prev, xi_curr,
+            F_prev, F_curr, trend)
+        if !same_sign(F_prev, F_curr)
+            return abs(F_prev) <= abs(F_curr) ?
+                (w_prev, x_prev) : (w_curr, x_curr)
+        end
+
+        actual_step = abs(xi_curr - xi_prev)
+        if actual_step < dx
+            dx = actual_step
+        end
+        xi_prev, w_prev, x_prev, F_prev = xi_curr, w_curr, x_curr, F_curr
+    end
+
+    verbose && println("$(label): no sign change after $(samples) " *
+        "accepted samples.")
+    nothing
 end
 
 function compute_upper_principal_representation(dict, moments, w0, x0;
@@ -813,23 +698,6 @@ function compute_lower_canonical_representation(dict, moments, xi, w0, x0;
     end
 end
 
-function compute_many_lower_canonical_representation(dict, moments, w0, x0, pts;
-        verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
-        sweep_direction::Union{Symbol,Nothing}=nothing,
-        max_adaptive_steps::Int=32, initial_xi=nothing,
-        canonical_lost_digits=nothing, options...)
-
-    initial_xi_resolved = initial_xi === nothing ?
-        (config.add_endpoint == :right ? first(x0) : last(x0)) :
-        initial_xi
-    lost_digits = _resolve_canonical_lost_digits(dict,
-        canonical_lost_digits, _lost_digits_policy_type(dict, moments))
-    _adaptive_canonical_sweep(compute_lower_canonical_representation,
-        "lower canonical", dict, moments, w0, x0, pts, initial_xi_resolved;
-        verbose, config, sweep_direction, max_adaptive_steps,
-        canonical_lost_digits=lost_digits, options...)
-end
-
 function estimate_lower_canonical_representation(dict, moments, a, b, w0, x0;
         verbose = false, config::GaussRuleConfig=GaussRuleConfig(),
         sweep_direction::Union{Symbol,Nothing}=nothing,
@@ -841,93 +709,22 @@ function estimate_lower_canonical_representation(dict, moments, a, b, w0, x0;
     #@assert length(x0) == l
 
     verbose && println("Estimating lower canonical representation, xi between $(a) and $(b)")
-    n = 8
-    estimate_lower_canonical_representation(dict, moments, a, b, w0, x0, n;
-        verbose, config, sweep_direction, max_adaptive_steps,
-        canonical_lost_digits, options...)
-end
 
-function estimate_lower_canonical_representation(dict, moments, a, b, w0, x0, n;
-        verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
-        sweep_direction::Union{Symbol,Nothing}=nothing,
-        max_adaptive_steps::Int=32, canonical_lost_digits=nothing,
-        options...)
-    if n > 1024
-        println(
-            "estimate_lower_canonical_representation: canonical interval refinement is too small ",
-            "(adaptive sweep grid parameter n=", n,
-            " exceeds maximum 1024 without locating a suitable bracket).",
-        )
-        println(
-            "Either check that the quadrature basis is correct, or increase ",
-            "the canonical_lost_digits parameter.",
-        )
-        if !verbose
-            println(
-                "Re-run with verbose=true (e.g. compute_gauss_rule(...; verbose=true)) ",
-                "to print Newton and sweep diagnostics.",
-            )
-        end
-    end
-    @assert n <= 1024
-
-    dir = sweep_direction !== nothing ? sweep_direction : get_direction(config)
-
-    pts = collect(range(a, b, length=n+2)[2:end-1])
-    # end_seed will be computed from refine_interval_from_sweep results if needed
-    end_seed = nothing
-    initial_xi = dir == :left_to_right ? a : b
     lost_digits = _resolve_canonical_lost_digits(dict,
         canonical_lost_digits, _lost_digits_policy_type(dict, moments))
-    someconverged, w, x, pts2 = compute_many_lower_canonical_representation(
-        dict[1:end-1], moments[1:end-1], w0, x0, pts;
-        verbose, config, sweep_direction, max_adaptive_steps, initial_xi,
+
+    seed = _estimate_canonical_representation_by_sweep(
+        compute_lower_canonical_representation, "Lower canonical",
+        dict, moments, a, b, w0, x0;
+        verbose, config, sweep_direction, max_adaptive_steps,
         canonical_lost_digits=lost_digits, options...)
-    if someconverged
-        if verbose && length(pts2) != length(pts)
-            println("Lower canonical: collected $(length(pts2)) converged samples for $(length(pts)) requested grid points")
-        end
-        Fvals = [Fk(w[:,i],x[:,i],dict[end], moments[end]) for i in 1:size(w,2)]
-        order = sweep_indices(length(Fvals), dir)
-        Fvals_sweep = Fvals[order]
-        if verbose && !ismonotonic(Fvals_sweep)
-            println("Lower canonical: function Fk is not monotonic along $(dir) sweep but should be.")
-        end
-        @assert ismonotonic(Fvals_sweep) "Lower canonical Fk sweep $(dir) should be monotonic.\nFvals_sweep = $(Fvals_sweep)\npts = $(pts2)\nIf the above Fvals are close to monotonic, this may indicate insufficient\nBigFloat precision for the current basis and degree.\nConsider increasing extra_digits or using a better-conditioned basis (e.g. Chebyshev).\nIf they are very bad, this may indicate something wrong with the basis or the moments."
-        if switches_sign(Fvals_sweep)
-            _gengauss_debug_println("DEBUG: Detected sign change in lower canonical")
-            if first(Fvals_sweep) > 0
-                I = findlast(Fvals_sweep .> 0)
-            else
-                I = findlast(Fvals_sweep .< 0)
-            end
-            left_idx = order[I]
-            right_idx = order[I+1]
-            _gengauss_debug_println("DEBUG: Sign change detected at indices $(left_idx) and $(right_idx)")
-            pts2[left_idx], pts2[right_idx], w[:,left_idx], x[:,left_idx], w[:,right_idx], x[:,right_idx]
-        else
-            _gengauss_debug_println("DEBUG: No sign change detected, refining interval")
-            a_new, b_new, wa_new, xa_new, wb_new, xb_new =
-                refine_interval_from_sweep(a, b, pts2, w, x, order, Fvals_sweep, dir, (w0, x0), end_seed)
-            verbose && println("Lower canonical: refining from $((a,b)) to $((a_new,b_new)) in direction $(dir)")
-            # Select the appropriate boundary based on add_endpoint
-            if sweep_direction !== nothing
-                w0_new = dir == :left_to_right ? wa_new : wb_new
-                x0_new = dir == :left_to_right ? xa_new : xb_new
-            else
-                w0_new = config.add_endpoint == :left ? wa_new : wb_new
-                x0_new = config.add_endpoint == :left ? xa_new : xb_new
-            end
-            estimate_lower_canonical_representation(dict, moments, a_new, b_new, w0_new, x0_new, 8;
-                verbose, config, sweep_direction, max_adaptive_steps,
-                canonical_lost_digits=lost_digits, options...)
-        end
-    else
-        verbose && println("Lower canonical: no convergence on grid, increasing to n=$(2n)")
-        estimate_lower_canonical_representation(dict, moments, a, b, w0, x0, 2n;
-            verbose, config, sweep_direction, max_adaptive_steps,
-            canonical_lost_digits=lost_digits, options...)
+    if seed === nothing
+        error("Lower canonical sweep failed to locate a next-moment " *
+              "sign change within the adaptive sweep budget. Check the basis " *
+              "or increase max_adaptive_steps/canonical_lost_digits if the " *
+              "Newton residuals are acceptable.")
     end
+    seed
 end
 
 function compute_lower_principal_representation(dict, moments, w0, x0;
@@ -996,99 +793,38 @@ function compute_canonical_both_ends(dict, moments, ξ, w0, x0;
 end
 
 """
-    compute_many_canonical_both_ends(dict, moments, w0, x0, pts, sweep_dir; ...)
-
-Sweep over `pts` in the order given by `sweep_dir` (`:left_to_right` or
-`:right_to_left`), solving the both-endpoints canonical at each ξ. Each step
-warm-seeds from the previous *converged* solution. If Newton fails for a target,
-retry by bisecting between the last converged ξ and the failed trial; if the
-target still cannot be reached, stop the sweep rather than jumping farther away.
-"""
-function compute_many_canonical_both_ends(dict, moments, w0, x0, pts, sweep_dir::Symbol;
-        verbose=false, position_of_xi::Int=2, max_adaptive_steps::Int=32,
-        initial_xi=nothing, canonical_lost_digits=nothing, options...)
-    initial_xi_resolved = initial_xi === nothing ? x0[position_of_xi] : initial_xi
-    lost_digits = _resolve_canonical_lost_digits(dict,
-        canonical_lost_digits, _lost_digits_policy_type(dict, moments))
-    compute_one_both_ends = function (dict, moments, ξ, w_seed, x_seed;
-            verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
-            diagnostics::Bool=false, options...)
-        compute_canonical_both_ends(dict, moments, ξ, w_seed, x_seed;
-            verbose, position_of_xi, diagnostics, options...)
-    end
-    _adaptive_canonical_sweep(compute_one_both_ends,
-        "both-end canonical", dict, moments, w0, x0, pts, initial_xi_resolved;
-        verbose, sweep_direction=sweep_dir, max_adaptive_steps,
-        canonical_lost_digits=lost_digits, options...)
-end
-
-"""
     estimate_canonical_both_ends(dict, moments, ξ_lo, ξ_hi, w0, x0; ...)
 
-Bisect ξ in `(ξ_lo, ξ_hi)` to bracket the root of
+Sweep ξ in `(ξ_lo, ξ_hi)` to locate the root of
 `F(ξ) = ⟨w(ξ), dict[end](x(ξ))⟩ - moments[end]`,
 where the canonical at ξ is the both-endpoints canonical of `c^{length(dict)-1}`
 (i.e. we strip the last basis function so the canonical is square, and use the
 last basis function as the moment monitor — same pattern as
 `estimate_lower_canonical_representation`).
 
-Mirrors the recursive sample-and-refine logic of
-`estimate_lower_canonical_representation`. Returns `(ξ_left, ξ_right, w_left,
-x_left, w_right, x_right)` bracketing the sign change, or `nothing` if the
-bracket cannot be established within `max_n_samples`.
+Streams through ξ in `sweep_dir`, solving one canonical at a time and stopping
+as soon as adjacent accepted samples bracket the residual sign change. Returns
+the endpoint `(w, x)` with the smaller absolute residual, or `nothing`
+if no sign change is established within the adaptive sweep budget.
 """
 function estimate_canonical_both_ends(dict, moments, ξ_lo, ξ_hi, w0, x0;
         position_of_xi::Int=2, sweep_dir::Symbol=:left_to_right,
-        n_samples::Int=8, max_n_samples::Int=1024,
         max_adaptive_steps::Int=32, canonical_lost_digits=nothing,
         verbose=false, options...)
-    @assert n_samples <= max_n_samples
-    pts = collect(range(ξ_lo, ξ_hi; length=n_samples+2)[2:end-1])
-    dict_inner = dict[1:end-1]
-    moments_inner = moments[1:end-1]
-    initial_xi = sweep_dir == :left_to_right ? ξ_lo : ξ_hi
     lost_digits = _resolve_canonical_lost_digits(dict,
         canonical_lost_digits, _lost_digits_policy_type(dict, moments))
-    some_ok, w, x, pts2 = compute_many_canonical_both_ends(dict_inner, moments_inner,
-        w0, x0, pts, sweep_dir; position_of_xi, verbose,
-        max_adaptive_steps, initial_xi,
+
+    compute_one_both_ends = function (dict, moments, ξ, w_seed, x_seed;
+            verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
+            diagnostics::Bool=false, options...)
+        compute_canonical_both_ends(dict, moments, ξ, w_seed, x_seed;
+            verbose, position_of_xi, diagnostics, options...)
+    end
+
+    _estimate_canonical_representation_by_sweep(compute_one_both_ends,
+        "Both-end canonical", dict, moments, ξ_lo, ξ_hi, w0, x0;
+        verbose, sweep_direction=sweep_dir, max_adaptive_steps,
         canonical_lost_digits=lost_digits, options...)
-    if !some_ok
-        if 2 * n_samples > max_n_samples
-            verbose && println("estimate_canonical_both_ends: no convergence on $(n_samples) samples; max reached")
-            return nothing
-        end
-        verbose && println("estimate_canonical_both_ends: no convergence; doubling to $(2*n_samples)")
-        return estimate_canonical_both_ends(dict, moments, ξ_lo, ξ_hi, w0, x0;
-            position_of_xi, sweep_dir, n_samples=2*n_samples, max_n_samples,
-            max_adaptive_steps, canonical_lost_digits=lost_digits,
-            verbose, options...)
-    end
-    if verbose && length(pts2) < length(pts)
-        println("estimate_canonical_both_ends: $(length(pts2))/$(length(pts)) samples converged")
-    end
-    Fvals = [Fk(w[:, i], x[:, i], dict[end], moments[end]) for i in 1:size(w, 2)]
-    order = sweep_indices(length(Fvals), sweep_dir)
-    Fvals_sweep = Fvals[order]
-    if verbose && !ismonotonic(Fvals_sweep)
-        println("estimate_canonical_both_ends: F not monotonic in sweep direction (may indicate samples outside K_1)")
-    end
-    if switches_sign(Fvals_sweep)
-        j = first(Fvals_sweep) > 0 ? findlast(Fvals_sweep .> 0) : findlast(Fvals_sweep .< 0)
-        left_i = order[j]
-        right_i = order[j + 1]
-        return pts2[left_i], pts2[right_i], w[:, left_i], x[:, left_i], w[:, right_i], x[:, right_i]
-    else
-        if 2 * n_samples > max_n_samples
-            verbose && println("estimate_canonical_both_ends: no sign change at $(n_samples) samples; max reached")
-            return nothing
-        end
-        verbose && println("estimate_canonical_both_ends: no sign change; doubling samples to $(2*n_samples)")
-        return estimate_canonical_both_ends(dict, moments, ξ_lo, ξ_hi, w0, x0;
-            position_of_xi, sweep_dir, n_samples=2*n_samples, max_n_samples,
-            max_adaptive_steps, canonical_lost_digits=lost_digits,
-            verbose, options...)
-    end
 end
 
 """
@@ -1111,13 +847,14 @@ left-Radau rule (LP of `c^{n_dict-1}`) padded with `b` at weight 0; ξ_seed =
 `radau_x[end]` = `t_l` of `c^{n_dict-1}` = right boundary of K_{l-1}. Bracket
 is `(lp_x[end-1], radau_x[end])`.
 
-The bisection finds ξ where the next-moment residual `F(ξ)` changes sign; the
-better of the two bracket endpoints (the one with smaller `|F|`) is then handed
-to one final `UpperPrincipalOdd` Newton solve to refine to the exact Lobatto rule.
+The sweep finds adjacent ξ values where the next-moment residual `F(ξ)` changes
+sign and returns the canonical rule with smaller `|F|`; that seed is then handed
+to one final `UpperPrincipalOdd` Newton solve to refine to the exact Lobatto
+rule.
 
 Requires `iseven(length(dict))`.
 
-Returns `(converged, w, x, diag)` where `diag` is `nothing` if the ξ bracket
+Returns `(converged, w, x, diag)` where `diag` is `nothing` if the ξ continuation
 step failed early; otherwise a Newton diagnostic like `solve_system_with_diagnostics`
 (residual norms vs `ftol`, or `:error` if the solver threw). A final solve
 within `lobatto_lost_digits` decimal digits of `ftol` is accepted with a
@@ -1149,7 +886,7 @@ function compute_lobatto_step(dict, moments, lp_w, lp_x, radau_w, radau_x,
         # Lower = radau_x[1] = the seed's natural ξ (the K_1 left boundary).
         # Upper = lp_x[2] (or lp_x[end] when l=2). Lobatto's position 2 value
         # is s_2 of c^{n_dict} ∈ (t_1, t_2) of c^{n_dict} = (lp_x[1], lp_x[2]),
-        # which lies inside this bracket. Sweeping left-to-right keeps Newton
+        # which lies inside this interval. Sweeping left-to-right keeps Newton
         # close to a converged previous solution at every step.
         ξ_lo = T(radau_x[1])
         ξ_hi = T(length(lp_x) >= 2 ? lp_x[2] : lp_x[end])
@@ -1169,25 +906,22 @@ function compute_lobatto_step(dict, moments, lp_w, lp_x, radau_w, radau_x,
         sweep_dir = :right_to_left
     end
 
-    verbose && println("  compute_lobatto_step: bracket [ξ_lo, ξ_hi] = [$(ξ_lo), $(ξ_hi)], sweep=$(sweep_dir), pos_of_xi=$(position_of_xi)")
+    verbose && println("  compute_lobatto_step: sweep interval [ξ_lo, ξ_hi] = [$(ξ_lo), $(ξ_hi)], sweep=$(sweep_dir), pos_of_xi=$(position_of_xi)")
     verbose && println("  compute_lobatto_step: seed_x = $(seed_x)")
 
-    bracket = estimate_canonical_both_ends(dict, moments, ξ_lo, ξ_hi, seed_w, seed_x;
+    canonical_seed = estimate_canonical_both_ends(dict, moments, ξ_lo, ξ_hi, seed_w, seed_x;
         position_of_xi, sweep_dir, verbose, max_adaptive_steps,
         canonical_lost_digits, options...)
-    if bracket === nothing
-        verbose && println("compute_lobatto_step: bracket not found; falling back to seed")
+    if canonical_seed === nothing
+        verbose && println("compute_lobatto_step: canonical seed not found; falling back to seed")
         return false, seed_w, seed_x, nothing
     end
 
-    _ξl, _ξr, w_left, x_left, w_right, x_right = bracket
-    F_left = Fk(w_left, x_left, dict[end], moments[end])
-    F_right = Fk(w_right, x_right, dict[end], moments[end])
-    seed_w_final, seed_x_final = abs(F_left) <= abs(F_right) ? (w_left, x_left) : (w_right, x_right)
+    seed_w_final, seed_x_final = canonical_seed
 
     # Final Newton on UpperPrincipalOdd: same fixed structure as the canonical
     # (a, b at indices 1 and l_rule), but now ξ is unfixed and the system is
-    # solving for all 2l moments at once. The bracket-end seed is already very
+    # solving for all 2l moments at once. The canonical seed is already very
     # close to the true Lobatto rule, so this converges quickly.
     rule = UpperPrincipalOdd(dict, moments)
     try
@@ -1269,8 +1003,8 @@ Keyword arguments:
   `compute_moments(dict; measure=measure)`. Ignored when `moments` are passed
   explicitly.
 - `verbose`: print progress information during the continuation.
-- `max_adaptive_steps`: maximum midpoint retries per canonical grid target when
-  Newton fails from the previous converged continuation point.
+- `max_adaptive_steps`: maximum midpoint retries per canonical continuation
+  target when Newton fails from the previous converged continuation point.
 - `canonical_lost_digits`: extra decimal digits by which intermediate
   canonical Newton residuals may miss `ftol` and still be accepted with a
   warning when `verbose=true`. Default `nothing` uses
@@ -1438,12 +1172,12 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
                 _gengauss_debug_println("DEBUG: length(dict[1:tot_moments]): ", length(dict[1:tot_moments]))
                 _gengauss_debug_println("DEBUG: length(moments[1:tot_moments]): ", length(moments[1:tot_moments]))
                 if step.branch == :upper
-                    _, _, _, _, w2, x2 =
+                    w2, x2 =
                         estimate_upper_canonical_representation(dict[1:tot_moments], moments[1:tot_moments], a, b, w0, x0; verbose, config, max_adaptive_steps, canonical_lost_digits=canonical_lost_digits_resolved, options...)
                         upper_canonical_state = (w2, x2)
                         lower_canonical_state = nothing
                 elseif step.branch == :lower
-                    _, _, _, _, w2, x2 =
+                    w2, x2 =
                         estimate_lower_canonical_representation(dict[1:tot_moments], moments[1:tot_moments], a, b, w0, x0; verbose, config, max_adaptive_steps, canonical_lost_digits=canonical_lost_digits_resolved, options...)
                         upper_canonical_state = nothing
                         lower_canonical_state = (w2, x2)
@@ -1552,7 +1286,7 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
     #
     # When the main loop runs to completion for even basis length, (w, x) holds
     # the lower principal of c^{n_dict} — the l-point Gauss-Legendre rule, which
-    # we use BOTH as the basis for the bisection bracket and as a verification
+    # we use BOTH to set the continuation interval and as a verification
     # of the moment match. principal=:upper for even basis length means we want
     # the Gauss-Lobatto rule = upper principal of the SAME moment vector:
     # an (l+1)-point rule with both endpoints fixed.
@@ -1589,7 +1323,7 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
         else
             lobatto_diag_str =
                 lobatto_diag === nothing ?
-                "unavailable (e.g. continuation ξ bracket not found before final Newton)." :
+                "unavailable (e.g. continuation ξ seed not found before final Newton)." :
                 _format_newton_diagnostic(lobatto_diag)
             lobatto_lost_digits_hint =
                 lobatto_diag === nothing || (:error in keys(lobatto_diag)) ?
