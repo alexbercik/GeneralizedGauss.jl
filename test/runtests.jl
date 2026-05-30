@@ -1,6 +1,6 @@
 using GeneralizedGauss
 using BasisFunctions
-using Base.Test
+using Test
 
 #include("orthogonalization.jl")
 #include("bigfloat_precision.jl")

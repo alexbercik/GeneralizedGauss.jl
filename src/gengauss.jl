@@ -406,8 +406,7 @@ function compute_two_point_rule(dict, moments; options...)
 
     a = supportleft(dict)
     b = supportright(dict)
-    T = promote_type(typeof(a), typeof(b))
-    x = T[a, b]
+    x = [a, b]
 
     u0a = funeval(dict, 1, a)
     u0b = funeval(dict, 1, b)
@@ -416,7 +415,7 @@ function compute_two_point_rule(dict, moments; options...)
 
     denom = u0a * u1b - u0b * u1a
 
-    tol = solver_tolerance(T)
+    tol = solver_tolerance(typeof(denom))
     if abs(denom) < tol
         error("Degenerate system: u₀(a)u₁(b) - u₀(b)u₁(a) ≈ 0.\n" *
               "The functions are linearly dependent on {a,b}, so a unique 2-point rule does not exist.")
@@ -1247,8 +1246,6 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
         solver::Symbol = :newton,
         options...)
     n = length(dict)
-    solver_resolved = _resolve_gauss_solver(dict, solver)
-    _require_multidimensional_solver_available(solver_resolved, n)
     add_endpoint_resolved = resolve_add_endpoint(principal, add_endpoint)
     # Automatically determine stop_at_odd_gauss based on dict length
     # If dict is even, compute full sequence (stop_at_odd_gauss = false)
@@ -1312,6 +1309,20 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
     push!(w_checkpoints, T[])  # Empty placeholder (no quadrature rule yet)
     push!(x_checkpoints, T[])  # Empty placeholder (no quadrature rule yet)
 
+    if n == 2 && config.principal == :upper
+        verbose && println("Computing two-point Lobatto rule")
+        w, x = compute_two_point_rule(dict[1:2], moments[1:2])
+        verbose && println("Two point quadrature rule is: ", x, ", ", w)
+        push!(xi_checkpoints, xi_extractor(x))
+        push!(w_checkpoints, w)
+        push!(x_checkpoints, x)
+        return w, x, xi_checkpoints, w_checkpoints, x_checkpoints
+    end
+
+    # -- Can we use derivatives? If yes, use a Newton solver.
+    solver_resolved = _resolve_gauss_solver(dict, solver)
+    _require_multidimensional_solver_available(solver_resolved, n)
+
     verbose && println("Computing initial one point rule")
     w, x = compute_one_point_rule(dict[1:2], moments[1:2];
         verbose, config, principal_lost_digits=principal_lost_digits_resolved,
@@ -1326,13 +1337,6 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
     if n == 2
         # For length(dict) == 2 the loop body would not execute (k_max = 0).
         # :lower → the 1-point free-node rule already in (w, x).
-        if config.principal == :upper
-            w_lob, x_lob = compute_two_point_rule(dict[1:2], moments[1:2])
-            push!(xi_checkpoints, xi_extractor(x_lob))
-            push!(w_checkpoints, w_lob)
-            push!(x_checkpoints, x_lob)
-            return w_lob, x_lob, xi_checkpoints, w_checkpoints, x_checkpoints
-        end
         return w, x, xi_checkpoints, w_checkpoints, x_checkpoints
     end
 

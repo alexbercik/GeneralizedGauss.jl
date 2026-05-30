@@ -123,6 +123,9 @@ const GRR3_W = [(16 - sqrt(6)) / 18, (16 + sqrt(6)) / 18, 2 / 9]
     w_brent, x_brent = compute_gauss_rule(basis_no_deriv, moments; solver=:brent)
     assert_rule_matches(w_brent, x_brent, [2.0], [0.0])
 
+    w_two, x_two = compute_gauss_rule(basis_no_deriv, moments; principal=:upper)
+    assert_rule_matches(w_two, x_two, [1.0, 1.0], [-1.0, 1.0])
+
     shifted_moments = [2.0, 1.0]
     redirect_stdout(devnull) do
         @test_throws ErrorException compute_gauss_rule(
