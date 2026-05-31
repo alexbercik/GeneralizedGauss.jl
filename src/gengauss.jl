@@ -458,6 +458,133 @@ function estimate_upper_canonical_representation(dict, moments, a, b, w0, x0;
 end
 
 const _CANONICAL_SWEEP_INITIAL_SUBDIVISIONS = 9
+const _MAX_PRINCIPAL_RECOVERY_REFINEMENTS = 3
+
+struct CanonicalSample{TXI,TF,TW,TX}
+    xi::TXI
+    F::TF
+    w::TW
+    x::TX
+end
+
+struct CanonicalBracketState{TXI,TF,TW,TX}
+    left::CanonicalSample{TXI,TF,TW,TX}
+    right::CanonicalSample{TXI,TF,TW,TX}
+    best::CanonicalSample{TXI,TF,TW,TX}
+    width::TXI
+end
+
+function CanonicalBracketState(left::CanonicalSample{TXI,TF,TW,TX},
+        right::CanonicalSample{TXI,TF,TW,TX}) where {TXI,TF,TW,TX}
+    best = abs(left.F) <= abs(right.F) ? left : right
+    CanonicalBracketState{TXI,TF,TW,TX}(left, right, best, right.xi - left.xi)
+end
+
+function _canonical_sample(xi, w, x, dict, moments)
+    CanonicalSample(xi,
+        eval_moment_error(w, x, dict[end], moments[end]),
+        w, x)
+end
+
+function _canonical_bracket_state(first::CanonicalSample,
+        second::CanonicalSample)
+    iszero(first.F) && return CanonicalBracketState(first, first)
+    iszero(second.F) && return CanonicalBracketState(second, second)
+
+    left, right = first.xi <= second.xi ?
+        (first, second) : (second, first)
+    if left.xi == right.xi
+        iszero(left.F) && iszero(right.F) ||
+            _canonical_refinement_error("canonical bracket has zero width " *
+                "without a zero residual.")
+    elseif same_sign(left.F, right.F)
+        _canonical_refinement_error("canonical bracket endpoints do not " *
+            "have opposite residual signs.")
+    end
+    CanonicalBracketState(left, right)
+end
+
+function _canonical_refinement_error(detail)
+    error("Canonical bracket refinement failed: $(detail) This may indicate " *
+          "conditioning problems or a basis that is not a CT-system.")
+end
+
+function _canonical_secant_target(state::CanonicalBracketState)
+    left, right = state.left, state.right
+    state.width > zero(state.width) ||
+        _canonical_refinement_error("cannot refine a zero-width bracket.")
+
+    midpoint = left.xi + state.width / 2
+    ΔF = right.F - left.F
+    target = iszero(ΔF) ? midpoint :
+        left.xi - left.F * state.width / ΔF
+
+    if !(left.xi < target < right.xi)
+        target = midpoint
+    end
+
+    if !(left.xi < target < right.xi) || _canonical_x_stalled(left.xi, target)
+        _canonical_refinement_error("secant interpolation and midpoint " *
+            "fallback stalled inside bracket [$(left.xi), $(right.xi)].")
+    end
+    target
+end
+
+function _update_canonical_bracket_after_refinement(
+        state::CanonicalBracketState, refined::CanonicalSample)
+    left, right = state.left, state.right
+    old_width = state.width
+    old_best = abs(state.best.F)
+
+    slack = 100 * eps(float(left.F))
+    residual_lo = min(left.F, right.F)
+    residual_hi = max(left.F, right.F)
+    residual_lo - slack <= refined.F <= residual_hi + slack ||
+        _canonical_refinement_error("refined next-moment residual " *
+            "$(refined.F) is inconsistent with the monotonic bracket " *
+            "residuals [$(left.F), $(right.F)].")
+
+    updated = if iszero(refined.F)
+        CanonicalBracketState(refined, refined)
+    elseif same_sign(left.F, refined.F)
+        CanonicalBracketState(refined, right)
+    elseif same_sign(right.F, refined.F)
+        CanonicalBracketState(left, refined)
+    else
+        _canonical_refinement_error("refined residual sign is inconsistent " *
+            "with the saved sign-changing bracket.")
+    end
+
+    new_width = updated.width
+    new_width < old_width ||
+        _canonical_refinement_error("updated bracket width did not shrink " *
+            "from $(old_width) to $(new_width).")
+
+    new_best = abs(updated.best.F)
+    new_best <= old_best + slack ||
+        _canonical_refinement_error("best absolute residual worsened from " *
+            "$(old_best) to $(new_best).")
+    updated
+end
+
+function _refine_canonical_bracket(compute_one, label, dict, moments,
+        state::CanonicalBracketState;
+        verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
+        max_adaptive_steps::Int=32, canonical_lost_digits::Real=2,
+        options...)
+    target = _canonical_secant_target(state)
+    warm_seed = abs(target - state.left.xi) <= abs(state.right.xi - target) ?
+        state.left : state.right
+    accepted, xi, w, x, _ =
+        _try_canonical_step(compute_one, label, dict[1:end-1],
+            moments[1:end-1], warm_seed.xi, target, warm_seed.w, warm_seed.x;
+            verbose, config, max_adaptive_steps, canonical_lost_digits,
+            options...)
+    accepted || return nothing
+
+    refined = _canonical_sample(xi, w, x, dict, moments)
+    _update_canonical_bracket_after_refinement(state, refined)
+end
 
 function _accept_canonical_step(compute_one, label, dict, moments, xi, w_seed, x_seed;
         verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
@@ -573,9 +700,10 @@ function _estimate_canonical_representation_by_sweep(compute_one, label,
     xi_prev = sweep_start
     w_prev, x_prev = w0, x0
     # -- initial moment error at previous principal representation (sweep start)
-    F_prev = eval_moment_error(w_prev, x_prev, dict[end], moments[end])
+    previous = _canonical_sample(xi_prev, w_prev, x_prev, dict, moments)
+    F_prev = previous.F
     iszero(F_prev) &&
-        return w_prev, x_prev
+        return CanonicalBracketState(previous, previous)
 
     trend = nothing
     samples = 0
@@ -585,6 +713,8 @@ function _estimate_canonical_representation_by_sweep(compute_one, label,
             break
         end
 
+        #-- Try a step. May return a smaller step than we wanted if
+        #   it could not converge and required some refinement.
         accepted, xi_curr, w_curr, x_curr, _ =
             _try_canonical_step(compute_one, label, dict_inner,
                 moments_inner, xi_prev, target, w_prev, x_prev;
@@ -596,21 +726,61 @@ function _estimate_canonical_representation_by_sweep(compute_one, label,
         F_curr = eval_moment_error(w_curr, x_curr, dict[end], moments[end])
         trend = _update_canonical_trend(label, dir, xi_prev, xi_curr,
             F_prev, F_curr, trend)
+        current = CanonicalSample(xi_curr, F_curr, w_curr, x_curr)
         if !same_sign(F_prev, F_curr)
-            return abs(F_prev) <= abs(F_curr) ?
-                (w_prev, x_prev) : (w_curr, x_curr)
+            return _canonical_bracket_state(previous, current)
         end
 
+        #-- If it required refinement, update the step size
         actual_step = abs(xi_curr - xi_prev)
         if actual_step < dx
             dx = actual_step
         end
+        previous = current
         xi_prev, w_prev, x_prev, F_prev = xi_curr, w_curr, x_curr, F_curr
     end
 
     verbose && println("$(label): no sign change after $(samples) " *
         "accepted samples.")
     nothing
+end
+
+function _compute_principal_with_canonical_recovery(solve_principal, principal_accepts,
+        compute_canonical, principal_label, canonical_label, dict, moments,
+        state::CanonicalBracketState;
+        verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
+        max_adaptive_steps::Int=32, canonical_lost_digits::Real=2,
+        options...)
+    last_w, last_x = nothing, nothing
+    last_diag = nothing
+
+    for refinement in 0:_MAX_PRINCIPAL_RECOVERY_REFINEMENTS
+        seed = state.best
+        converged, last_w, last_x, last_diag =
+            solve_principal(seed.w, seed.x)
+        if converged || principal_accepts(last_diag)
+            return converged, last_w, last_x, last_diag
+        end
+
+        refinement == _MAX_PRINCIPAL_RECOVERY_REFINEMENTS && break
+        if iszero(state.width)
+            verbose && println("$(principal_label): saved canonical bracket " *
+                "is already exact; no closer canonical retry seed exists.")
+            break
+        end
+
+        verbose && println("$(principal_label): Newton failed; refining " *
+            "saved canonical bracket before retry $(refinement + 1) of " *
+            "$(_MAX_PRINCIPAL_RECOVERY_REFINEMENTS).")
+        refined_state = _refine_canonical_bracket(
+            compute_canonical, canonical_label, dict, moments, state;
+            verbose, config, max_adaptive_steps, canonical_lost_digits,
+            options...)
+        refined_state === nothing && break
+        state = refined_state
+    end
+
+    false, last_w, last_x, last_diag
 end
 
 function compute_upper_principal_representation(dict, moments, w0, x0;
@@ -792,6 +962,15 @@ function compute_canonical_both_ends(dict, moments, ξ, w0, x0;
     end
 end
 
+function _canonical_both_ends_solver(position_of_xi::Int)
+    function (dict, moments, ξ, w_seed, x_seed;
+            verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
+            diagnostics::Bool=false, options...)
+        compute_canonical_both_ends(dict, moments, ξ, w_seed, x_seed;
+            verbose, position_of_xi, diagnostics, options...)
+    end
+end
+
 """
     estimate_canonical_both_ends(dict, moments, ξ_lo, ξ_hi, w0, x0; ...)
 
@@ -804,8 +983,8 @@ last basis function as the moment monitor — same pattern as
 
 Streams through ξ in `sweep_dir`, solving one canonical at a time and stopping
 as soon as adjacent accepted samples bracket the residual sign change. Returns
-the endpoint `(w, x)` with the smaller absolute residual, or `nothing`
-if no sign change is established within the adaptive sweep budget.
+the retained `CanonicalBracketState`, or `nothing` if no sign change is
+established within the adaptive sweep budget.
 """
 function estimate_canonical_both_ends(dict, moments, ξ_lo, ξ_hi, w0, x0;
         position_of_xi::Int=2, sweep_dir::Symbol=:left_to_right,
@@ -814,12 +993,7 @@ function estimate_canonical_both_ends(dict, moments, ξ_lo, ξ_hi, w0, x0;
     lost_digits = _resolve_canonical_lost_digits(dict,
         canonical_lost_digits, _lost_digits_policy_type(dict, moments))
 
-    compute_one_both_ends = function (dict, moments, ξ, w_seed, x_seed;
-            verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
-            diagnostics::Bool=false, options...)
-        compute_canonical_both_ends(dict, moments, ξ, w_seed, x_seed;
-            verbose, position_of_xi, diagnostics, options...)
-    end
+    compute_one_both_ends = _canonical_both_ends_solver(position_of_xi)
 
     _estimate_canonical_representation_by_sweep(compute_one_both_ends,
         "Both-end canonical", dict, moments, ξ_lo, ξ_hi, w0, x0;
@@ -848,9 +1022,9 @@ left-Radau rule (LP of `c^{n_dict-1}`) padded with `b` at weight 0; ξ_seed =
 is `(lp_x[end-1], radau_x[end])`.
 
 The sweep finds adjacent ξ values where the next-moment residual `F(ξ)` changes
-sign and returns the canonical rule with smaller `|F|`; that seed is then handed
-to one final `UpperPrincipalOdd` Newton solve to refine to the exact Lobatto
-rule.
+sign. The better endpoint seeds the final `UpperPrincipalOdd` Newton solve. If
+that Newton solve fails, bounded secant refinement tightens the retained
+canonical bracket before retrying.
 
 Requires `iseven(length(dict))`.
 
@@ -872,6 +1046,9 @@ function compute_lobatto_step(dict, moments, lp_w, lp_x, radau_w, radau_x,
     b_pt = T(supportright(dict))
     lobatto_digits =
         _resolve_lobatto_lost_digits(dict, lobatto_lost_digits,
+            _lost_digits_policy_type(dict, moments))
+    canonical_digits =
+        _resolve_canonical_lost_digits(dict, canonical_lost_digits,
             _lost_digits_policy_type(dict, moments))
 
     if config.add_endpoint == :right
@@ -909,38 +1086,47 @@ function compute_lobatto_step(dict, moments, lp_w, lp_x, radau_w, radau_x,
     verbose && println("  compute_lobatto_step: sweep interval [ξ_lo, ξ_hi] = [$(ξ_lo), $(ξ_hi)], sweep=$(sweep_dir), pos_of_xi=$(position_of_xi)")
     verbose && println("  compute_lobatto_step: seed_x = $(seed_x)")
 
-    canonical_seed = estimate_canonical_both_ends(dict, moments, ξ_lo, ξ_hi, seed_w, seed_x;
+    canonical_state = estimate_canonical_both_ends(dict, moments, ξ_lo, ξ_hi, seed_w, seed_x;
         position_of_xi, sweep_dir, verbose, max_adaptive_steps,
-        canonical_lost_digits, options...)
-    if canonical_seed === nothing
+        canonical_lost_digits=canonical_digits, options...)
+    if canonical_state === nothing
         verbose && println("compute_lobatto_step: canonical seed not found; falling back to seed")
         return false, seed_w, seed_x, nothing
     end
-
-    seed_w_final, seed_x_final = canonical_seed
 
     # Final Newton on UpperPrincipalOdd: same fixed structure as the canonical
     # (a, b at indices 1 and l_rule), but now ξ is unfixed and the system is
     # solving for all 2l moments at once. The canonical seed is already very
     # close to the true Lobatto rule, so this converges quickly.
     rule = UpperPrincipalOdd(dict, moments)
-    try
-        converged_final, wf, xf, diag =
-            solve_system_with_diagnostics(rule, seed_w_final, seed_x_final;
+    solve_lobatto = function (w_seed, x_seed)
+        try
+            solve_system_with_diagnostics(rule, w_seed, x_seed;
                 verbose, options...)
-        lost_digits_converged_final = !converged_final &&
-            _lobatto_lost_digits_accepts(diag, lobatto_digits)
-        if lost_digits_converged_final && verbose
-            _warn_lobatto_lost_digits_acceptance(diag, lobatto_digits)
+        catch e
+            if e isa InterruptException
+                rethrow()
+            end
+            println("compute_lobatto_step: error in final UpperPrincipalOdd Newton: ", e)
+            false, w_seed, x_seed, _newton_exception_diagnostic(e)
         end
-        return converged_final || lost_digits_converged_final, wf, xf, diag
-    catch e
-        if e isa InterruptException
-            rethrow()
-        end
-        println("compute_lobatto_step: error in final UpperPrincipalOdd Newton: ", e)
-        return false, seed_w_final, seed_x_final, _newton_exception_diagnostic(e)
     end
+    compute_one_both_ends = _canonical_both_ends_solver(position_of_xi)
+    converged_final, wf, xf, diag =
+        _compute_principal_with_canonical_recovery(
+            solve_lobatto,
+            diagnostic -> _lobatto_lost_digits_accepts(
+                diagnostic, lobatto_digits),
+            compute_one_both_ends, "Gauss-Lobatto final",
+            "Both-end canonical", dict, moments, canonical_state;
+            verbose, config, max_adaptive_steps,
+            canonical_lost_digits=canonical_digits, options...)
+    lost_digits_converged_final = !converged_final &&
+        _lobatto_lost_digits_accepts(diag, lobatto_digits)
+    if lost_digits_converged_final && verbose
+        _warn_lobatto_lost_digits_acceptance(diag, lobatto_digits)
+    end
+    converged_final || lost_digits_converged_final, wf, xf, diag
 end
 
 
@@ -1172,38 +1358,42 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
                 _gengauss_debug_println("DEBUG: length(dict[1:tot_moments]): ", length(dict[1:tot_moments]))
                 _gengauss_debug_println("DEBUG: length(moments[1:tot_moments]): ", length(moments[1:tot_moments]))
                 if step.branch == :upper
-                    w2, x2 =
+                    upper_canonical_state =
                         estimate_upper_canonical_representation(dict[1:tot_moments], moments[1:tot_moments], a, b, w0, x0; verbose, config, max_adaptive_steps, canonical_lost_digits=canonical_lost_digits_resolved, options...)
-                        upper_canonical_state = (w2, x2)
-                        lower_canonical_state = nothing
+                    lower_canonical_state = nothing
                 elseif step.branch == :lower
-                    w2, x2 =
+                    lower_canonical_state =
                         estimate_lower_canonical_representation(dict[1:tot_moments], moments[1:tot_moments], a, b, w0, x0; verbose, config, max_adaptive_steps, canonical_lost_digits=canonical_lost_digits_resolved, options...)
-                        upper_canonical_state = nothing
-                        lower_canonical_state = (w2, x2)
+                    upper_canonical_state = nothing
                 else
                     error("Unknown branch: ", step.branch)
                 end
             elseif step.stage == :principal && step.branch == :upper
                 @assert upper_canonical_state !== nothing
-                w2, x2 = upper_canonical_state
-                _gengauss_debug_println("DEBUG: x2: ", x2)
-                _gengauss_debug_println("DEBUG: w2: ", w2)
                 _gengauss_debug_println("DEBUG: len moments: ", length(moments[1:tot_moments]))
-                converged, w, x, principal_diag =
+                principal_label =
+                    "upper principal representation $(upper_principal_index + 1)"
+                solve_principal = (w_seed, x_seed) ->
                     compute_upper_principal_representation(
-                        dict[1:tot_moments], moments[1:tot_moments], w2, x2;
+                        dict[1:tot_moments], moments[1:tot_moments],
+                        w_seed, x_seed;
                         verbose, config, diagnostics=true, options...)
-                if !converged
-                    converged, w, x, principal_diag =
-                        compute_upper_principal_representation(
-                            dict[1:tot_moments], moments[1:tot_moments], w, x;
-                            verbose, config, diagnostics=true, options...)
-                end
+                converged, w, x, principal_diag =
+                    _compute_principal_with_canonical_recovery(
+                        solve_principal,
+                        diag -> _principal_lost_digits_accepts(
+                            diag, principal_lost_digits_resolved),
+                        compute_upper_canonical_representation,
+                        principal_label, "Upper canonical",
+                        dict[1:tot_moments], moments[1:tot_moments],
+                        upper_canonical_state;
+                        verbose, config, max_adaptive_steps,
+                        canonical_lost_digits=canonical_lost_digits_resolved,
+                        options...)
                 xi = xi_extractor(x)
                 upper_principal_index += 1
                 _require_principal_convergence(
-                    "upper principal representation $(upper_principal_index)",
+                    principal_label,
                     xi, converged, principal_diag, principal_lost_digits_resolved;
                     verbose)
                 verbose && println("Upper principal representation ", upper_principal_index, " : xi is ", xi)
@@ -1233,24 +1423,30 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
                 end
             elseif step.stage == :principal && step.branch == :lower
                 @assert lower_canonical_state !== nothing
-                w2, x2 = lower_canonical_state
-                _gengauss_debug_println("DEBUG: x2: ", x2)
-                _gengauss_debug_println("DEBUG: w2: ", w2)
                 _gengauss_debug_println("DEBUG: len moments: ", length(moments[1:tot_moments]))
-                converged, w, x, principal_diag =
+                principal_label =
+                    "lower principal representation $(lower_principal_index + 1)"
+                solve_principal = (w_seed, x_seed) ->
                     compute_lower_principal_representation(
-                        dict[1:tot_moments], moments[1:tot_moments], w2, x2;
+                        dict[1:tot_moments], moments[1:tot_moments],
+                        w_seed, x_seed;
                         verbose, config, diagnostics=true, options...)
-                if !converged
-                    converged, w, x, principal_diag =
-                        compute_lower_principal_representation(
-                            dict[1:tot_moments], moments[1:tot_moments], w, x;
-                            verbose, config, diagnostics=true, options...)
-                end
+                converged, w, x, principal_diag =
+                    _compute_principal_with_canonical_recovery(
+                        solve_principal,
+                        diag -> _principal_lost_digits_accepts(
+                            diag, principal_lost_digits_resolved),
+                        compute_lower_canonical_representation,
+                        principal_label, "Lower canonical",
+                        dict[1:tot_moments], moments[1:tot_moments],
+                        lower_canonical_state;
+                        verbose, config, max_adaptive_steps,
+                        canonical_lost_digits=canonical_lost_digits_resolved,
+                        options...)
                 xi = xi_extractor(x)
                 lower_principal_index += 1
                 _require_principal_convergence(
-                    "lower principal representation $(lower_principal_index)",
+                    principal_label,
                     xi, converged, principal_diag, principal_lost_digits_resolved;
                     verbose)
                 verbose && println("Lower principal representation ", lower_principal_index, " : xi is ", xi)
