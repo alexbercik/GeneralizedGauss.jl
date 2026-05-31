@@ -257,7 +257,7 @@ function _require_multidimensional_solver_available(solver::Symbol, n::Int)
           "The derivative-free multidimensional continuation fallback is TBD.")
 end
 
-function solve_system_with_diagnostics(rule, w0, x0; verbose=false, options...)
+function solve_system(rule, w0, x0; verbose=false, options...)
     x_init = quad_to_newton(rule, w0, x0)
     F!(Fx, x) = residual!(Fx, rule, x)
     J!(Jx, x) = jacobian!(Jx, rule, x)
@@ -267,11 +267,6 @@ function solve_system_with_diagnostics(rule, w0, x0; verbose=false, options...)
     r = nlsolve(F!, J!, x_init; ftol = tol, options...)
     w, x = newton_to_quad(rule, r.zero)
     converged(r), w, x, _newton_diagnostic(rule, r.zero, tol)
-end
-
-function solve_system(rule, w0, x0; verbose=false, options...)
-    ok, w, x, _ = solve_system_with_diagnostics(rule, w0, x0; verbose, options...)
-    ok, w, x
 end
 
 function supportleft(dict)
@@ -370,18 +365,15 @@ function _quad_rule_diagnostic(dict, moments, w, x)
 end
 
 function _compute_two_point_canonical_representation(dict, moments, a, b;
-        diagnostics::Bool=false, options...)
+        options...)
     w, x = compute_two_point_rule(dict, moments, a, b; options...)
-    if diagnostics
-        return true, w, x, _quad_rule_diagnostic(dict, moments, w, x)
-    end
-    true, w, x
+    true, w, x, _quad_rule_diagnostic(dict, moments, w, x)
 end
 
 
 function compute_upper_canonical_representation(dict, moments, xi, w0, x0;
         verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
-        diagnostics::Bool=false, options...)
+        options...)
     @assert length(moments) == length(dict)
 
     _gengauss_debug_println("DEBUG: compute_upper_canonical_representation, even number of basis functions, (", length(dict), ")")
@@ -389,15 +381,14 @@ function compute_upper_canonical_representation(dict, moments, xi, w0, x0;
     if length(dict) == 2
         try
             return _compute_two_point_canonical_representation(
-                dict, moments, xi, supportright(dict);
-                diagnostics, options...)
+                dict, moments, xi, supportright(dict); options...)
         catch e
             if e isa InterruptException
                 rethrow()
             end
             println("ERROR THROWN at $(xi) in computation of two-point upper canonical")
             @show e
-            return diagnostics ? (false, w0, x0, _newton_exception_diagnostic(e)) : (false, w0, x0)
+            return false, w0, x0, _newton_exception_diagnostic(e)
         end
     end
 
@@ -411,18 +402,14 @@ function compute_upper_canonical_representation(dict, moments, xi, w0, x0;
     end
 
     try
-        if diagnostics
-            solve_system_with_diagnostics(rule, w0, x0; verbose, options...)
-        else
-            solve_system(rule, w0, x0; verbose, options...)
-        end
+        solve_system(rule, w0, x0; verbose, options...)
     catch e
         if e isa InterruptException
             rethrow()
         end
         println("ERROR THROWN at $(xi) in computation of upper canonical")
         @show e
-        diagnostics ? (false, w0, x0, _newton_exception_diagnostic(e)) : (false, w0, x0)
+        false, w0, x0, _newton_exception_diagnostic(e)
     end
 end
 
@@ -591,7 +578,7 @@ function _accept_canonical_step(compute_one, label, dict, moments, xi, w_seed, x
         canonical_lost_digits::Real=2, options...)
     converged, w, x, diag =
         compute_one(dict, moments, xi, w_seed, x_seed;
-            verbose, config, diagnostics=true, options...)
+            verbose, config, options...)
     if converged
         return true, w, x, diag
     end
@@ -785,29 +772,25 @@ end
 
 function compute_upper_principal_representation(dict, moments, w0, x0;
         verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
-        diagnostics::Bool=false, options...)
+        options...)
     @assert isodd(length(dict))
     @assert length(moments) == length(dict)
     @assert length(w0) == (length(dict)>>1)+1
 
     rule = upper_principal_rule(dict, moments, config)
     try
-        if diagnostics
-            solve_system_with_diagnostics(rule, w0, x0; verbose, options...)
-        else
-            solve_system(rule, w0, x0; verbose, options...)
-        end
+        solve_system(rule, w0, x0; verbose, options...)
     catch e
         if e isa InterruptException
             rethrow()
         end
-        diagnostics ? (false, w0, x0, _newton_exception_diagnostic(e)) : (false, w0, x0)
+        false, w0, x0, _newton_exception_diagnostic(e)
     end
 end
 
 function compute_lower_canonical_representation(dict, moments, xi, w0, x0;
         verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
-        diagnostics::Bool=false, options...)
+        options...)
     @assert length(moments) == length(dict)
 
     if length(dict) == 2
@@ -816,14 +799,14 @@ function compute_lower_canonical_representation(dict, moments, xi, w0, x0;
                 (xi, supportright(dict)) :
                 (supportleft(dict), xi)
             return _compute_two_point_canonical_representation(
-                dict, moments, a, b; diagnostics, options...)
+                dict, moments, a, b; options...)
         catch e
             if e isa InterruptException
                 rethrow()
             end
             println("ERROR THROWN at $(xi) in computation of two-point lower canonical")
             @show e
-            return diagnostics ? (false, w0, x0, _newton_exception_diagnostic(e)) : (false, w0, x0)
+            return false, w0, x0, _newton_exception_diagnostic(e)
         end
     end
 
@@ -853,18 +836,14 @@ function compute_lower_canonical_representation(dict, moments, xi, w0, x0;
     end
 
     try
-        if diagnostics
-            solve_system_with_diagnostics(rule, w0, x0; verbose, options...)
-        else
-            solve_system(rule, w0, x0; verbose, options...)
-        end
+        solve_system(rule, w0, x0; verbose, options...)
     catch e
         if e isa InterruptException
             rethrow()
         end
         println("ERROR THROWN at $(xi) in computation of lower canonical")
         @show e
-        diagnostics ? (false, w0, x0, _newton_exception_diagnostic(e)) : (false, w0, x0)
+        false, w0, x0, _newton_exception_diagnostic(e)
     end
 end
 
@@ -899,7 +878,7 @@ end
 
 function compute_lower_principal_representation(dict, moments, w0, x0;
         verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
-        diagnostics::Bool=false, options...)
+        options...)
     if isodd(length(dict))
         # odd number of (n+1) basis functions (even n)
         rule = LowerPrincipalEven(dict, moments)
@@ -908,16 +887,12 @@ function compute_lower_principal_representation(dict, moments, w0, x0;
         rule = LowerPrincipalOdd(dict, moments)
     end
     try
-        if diagnostics
-            solve_system_with_diagnostics(rule, w0, x0; verbose, options...)
-        else
-            solve_system(rule, w0, x0; verbose, options...)
-        end
+        solve_system(rule, w0, x0; verbose, options...)
     catch e
         if e isa InterruptException
             rethrow()
         end
-        diagnostics ? (false, w0, x0, _newton_exception_diagnostic(e)) : (false, w0, x0)
+        false, w0, x0, _newton_exception_diagnostic(e)
     end
 end
 
@@ -937,8 +912,7 @@ DOFs: `l_rule = (n>>1) + 2` weights + `(l_rule - 3)` free interior positions =
 `length(dict)` equations. Square Newton.
 """
 function compute_canonical_both_ends(dict, moments, ξ, w0, x0;
-        verbose=false, position_of_xi::Int=2, diagnostics::Bool=false,
-        options...)
+        verbose=false, position_of_xi::Int=2, options...)
     @assert isodd(length(dict)) "compute_canonical_both_ends: length(dict) must be odd (so n is even); got $(length(dict))"
     @assert length(moments) == length(dict)
     n_inner = length(dict) - 1
@@ -948,26 +922,22 @@ function compute_canonical_both_ends(dict, moments, ξ, w0, x0;
     fixed_idx = [1, position_of_xi, l_rule]
     rule = CanonicalRepresentationEven_K1(dict, ξ, moments, fixed_idx)
     try
-        if diagnostics
-            solve_system_with_diagnostics(rule, w0, x0; verbose, options...)
-        else
-            solve_system(rule, w0, x0; verbose, options...)
-        end
+        solve_system(rule, w0, x0; verbose, options...)
     catch e
         if e isa InterruptException
             rethrow()
         end
         verbose && println("compute_canonical_both_ends: error at ξ=$(ξ): ", e)
-        diagnostics ? (false, w0, x0, _newton_exception_diagnostic(e)) : (false, w0, x0)
+        false, w0, x0, _newton_exception_diagnostic(e)
     end
 end
 
 function _canonical_both_ends_solver(position_of_xi::Int)
     function (dict, moments, ξ, w_seed, x_seed;
             verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
-            diagnostics::Bool=false, options...)
+            options...)
         compute_canonical_both_ends(dict, moments, ξ, w_seed, x_seed;
-            verbose, position_of_xi, diagnostics, options...)
+            verbose, position_of_xi, options...)
     end
 end
 
@@ -1029,7 +999,7 @@ canonical bracket before retrying.
 Requires `iseven(length(dict))`.
 
 Returns `(converged, w, x, diag)` where `diag` is `nothing` if the ξ continuation
-step failed early; otherwise a Newton diagnostic like `solve_system_with_diagnostics`
+step failed early; otherwise a Newton diagnostic like `solve_system`
 (residual norms vs `ftol`, or `:error` if the solver threw). A final solve
 within `lobatto_lost_digits` decimal digits of `ftol` is accepted with a
 warning when `verbose=true`.
@@ -1101,7 +1071,7 @@ function compute_lobatto_step(dict, moments, lp_w, lp_x, radau_w, radau_x,
     rule = UpperPrincipalOdd(dict, moments)
     solve_lobatto = function (w_seed, x_seed)
         try
-            solve_system_with_diagnostics(rule, w_seed, x_seed;
+            solve_system(rule, w_seed, x_seed;
                 verbose, options...)
         catch e
             if e isa InterruptException
@@ -1377,7 +1347,7 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
                     compute_upper_principal_representation(
                         dict[1:tot_moments], moments[1:tot_moments],
                         w_seed, x_seed;
-                        verbose, config, diagnostics=true, options...)
+                        verbose, config, options...)
                 converged, w, x, principal_diag =
                     _compute_principal_with_canonical_recovery(
                         solve_principal,
@@ -1430,7 +1400,7 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
                     compute_lower_principal_representation(
                         dict[1:tot_moments], moments[1:tot_moments],
                         w_seed, x_seed;
-                        verbose, config, diagnostics=true, options...)
+                        verbose, config, options...)
                 converged, w, x, principal_diag =
                     _compute_principal_with_canonical_recovery(
                         solve_principal,
