@@ -117,17 +117,17 @@ function default_representation_steps(principal::Symbol, add_endpoint::Symbol, e
     steps
 end
 
-function _newton_diagnostic(rule, newton_x, tol)
+function _solver_diagnostic(rule, newton_x, tol)
     Fx = residual(rule, newton_x)
     residual_norm = maximum(abs, Fx)
     (; residual_norm, tolerance=tol, ratio=residual_norm / tol)
 end
 
-function _newton_exception_diagnostic(e)
+function _solver_exception_diagnostic(e)
     (; residual_norm=nothing, tolerance=nothing, ratio=nothing, error=e)
 end
 
-function _format_newton_diagnostic(diag)
+function _format_solver_diagnostic(diag)
     diag === nothing && return "diagnostic unavailable"
     if :error in keys(diag)
         return "diagnostic unavailable: solver threw $(typeof(diag.error))"
@@ -196,8 +196,8 @@ end
 function _warn_lost_digits_acceptance(label, location, diag, lost_digits,
         option_name)
     where = location === nothing ? "" : " for $(location)"
-    println("WARNING: accepted $(label) Newton solve$(where) above ftol " *
-            "[$(_format_newton_diagnostic(diag)), $(option_name)=$(lost_digits)]; " *
+    println("WARNING: accepted $(label) nonlinear solve$(where) above ftol " *
+            "[$(_format_solver_diagnostic(diag)), $(option_name)=$(lost_digits)]; " *
             "some accuracy may be lost.")
 end
 
@@ -227,10 +227,10 @@ function _require_principal_convergence(label, location, converged, diag,
     end
 
     where = location === nothing ? "" : " for $(location)"
-    println("ERROR: $(label) Newton solve$(where) failed " *
-            "[$(_format_newton_diagnostic(diag)), " *
+    println("ERROR: $(label) nonlinear solve$(where) failed " *
+            "[$(_format_solver_diagnostic(diag)), " *
             "principal_lost_digits=$(principal_lost_digits)]; stopping.")
-    error("$(label) Newton solve failed. Consider increasing principal_lost_digits if residual is still acceptable.")
+    error("$(label) nonlinear solve failed. Consider increasing principal_lost_digits if residual is still acceptable.")
 end
 
 function _has_first_derivatives(dict::Dictionary)
@@ -239,34 +239,40 @@ function _has_first_derivatives(dict::Dictionary)
         1:length(dict))
 end
 
-function _resolve_gauss_solver(dict::Dictionary, solver::Symbol)
-    if solver == :newton && !_has_first_derivatives(dict)
-        @warn("No analytic first derivatives were provided for this basis. " *
-              "Falling back to the derivative-free solver scaffold; only " *
-              "the one-point rule is implemented so far, and the " *
-              "multidimensional fallback is TBD.")
-        return :fallback
+function _resolve_gauss_solver_mode(dict::Dictionary, differentiable::Bool)
+    differentiable || return :mads
+    if !_has_first_derivatives(dict)
+        @warn("Analytic first derivatives are missing for at least one basis " *
+              "function. Missing node derivatives will be approximated with " *
+              "support-aware finite differences.")
+        return :finite_diff_nlsolve
     end
-    solver
+    :analytic_nlsolve
 end
 
-function _require_multidimensional_solver_available(solver::Symbol, n::Int)
-    n <= 2 && return nothing
-    solver == :newton && return nothing
-    error("compute_gauss_rules: solver=$(solver) is implemented only for the one-point rule so far. " *
-          "The derivative-free multidimensional continuation fallback is TBD.")
-end
-
-function solve_system(rule, w0, x0; verbose=false, options...)
+function solve_system(rule, w0, x0; verbose=false,
+        solver_mode::Symbol=:analytic_nlsolve, mads_dx=nothing,
+        mads_bracket=nothing, options...)
     x_init = quad_to_newton(rule, w0, x0)
     F!(Fx, x) = residual!(Fx, rule, x)
-    J!(Jx, x) = jacobian!(Jx, rule, x)
 
     tol = solver_tolerance(eltype(x_init))
 
+    if solver_mode == :mads
+        return _solve_system_mads(rule, w0, x0; verbose, dx=mads_dx,
+            bracket=mads_bracket)
+    elseif solver_mode == :analytic_nlsolve
+        eval_deriv = funeval_deriv
+    elseif solver_mode == :finite_diff_nlsolve
+        eval_deriv = funeval_deriv_or_finite_diff
+    else
+        error("Unknown nonlinear solver mode $(solver_mode).")
+    end
+
+    J!(Jx, x) = jacobian!(Jx, rule, x, eval_deriv)
     r = nlsolve(F!, J!, x_init; ftol = tol, options...)
     w, x = newton_to_quad(rule, r.zero)
-    converged(r), w, x, _newton_diagnostic(rule, r.zero, tol)
+    converged(r), w, x, _solver_diagnostic(rule, r.zero, tol)
 end
 
 function supportleft(dict)
@@ -277,7 +283,7 @@ supportright(dict) = rightendpoint(support(dict))
 
 function compute_one_point_rule(dict, moments; verbose=false,
         config::GaussRuleConfig=GaussRuleConfig(),
-        principal_lost_digits::Real=0, solver::Symbol=:newton, options...)
+        principal_lost_digits::Real=0, differentiable::Bool=true, options...)
     @assert length(dict) == 2
     @assert length(moments) == 2
 
@@ -294,9 +300,9 @@ function compute_one_point_rule(dict, moments; verbose=false,
     x_tol = base_tol * max(one(x0), abs(a), abs(b))
     f_tol = base_tol * max(one(x0), maximum(abs, moments))
 
-    if solver == :newton
-        df = x -> c1 * funeval_deriv(dict, 2, x) -
-                  c2 * funeval_deriv(dict, 1, x)
+    if differentiable
+        df = x -> c1 * funeval_deriv_or_finite_diff(dict, 2, x) -
+                  c2 * funeval_deriv_or_finite_diff(dict, 1, x)
         converged, x, fx = _scalar_newton_root(f, df, a, b, x0;
             x_tol, f_tol, verbose, options...)
         if !converged
@@ -388,7 +394,7 @@ function compute_upper_canonical_representation(dict, moments, xi, w0, x0;
             end
             println("ERROR THROWN at $(xi) in computation of two-point upper canonical")
             @show e
-            return false, w0, x0, _newton_exception_diagnostic(e)
+            return false, w0, x0, _solver_exception_diagnostic(e)
         end
     end
 
@@ -409,7 +415,7 @@ function compute_upper_canonical_representation(dict, moments, xi, w0, x0;
         end
         println("ERROR THROWN at $(xi) in computation of upper canonical")
         @show e
-        false, w0, x0, _newton_exception_diagnostic(e)
+        false, w0, x0, _solver_exception_diagnostic(e)
     end
 end
 
@@ -439,7 +445,7 @@ function estimate_upper_canonical_representation(dict, moments, a, b, w0, x0;
         error("Upper canonical sweep failed to locate a next-moment " *
               "sign change within the adaptive sweep budget. Check the basis " *
               "or increase max_adaptive_steps/canonical_lost_digits if the " *
-              "Newton residuals are acceptable.")
+              "nonlinear residuals are acceptable.")
     end
     seed
 end
@@ -459,18 +465,36 @@ struct CanonicalBracketState{TXI,TF,TW,TX}
     right::CanonicalSample{TXI,TF,TW,TX}
     best::CanonicalSample{TXI,TF,TW,TX}
     width::TXI
+    xi_index::Int
 end
 
 function CanonicalBracketState(left::CanonicalSample{TXI,TF,TW,TX},
         right::CanonicalSample{TXI,TF,TW,TX}) where {TXI,TF,TW,TX}
+    # The canonical representation fixes one node exactly at xi. Infer its
+    # index from the realized rules so branch-specific index formulas cannot
+    # disagree with the representation sent to the nonlinear solver.
+    left_xi_index = _canonical_xi_index(left)
+    right_xi_index = _canonical_xi_index(right)
+    left_xi_index == right_xi_index ||
+        _canonical_refinement_error("canonical bracket changed the fixed xi " *
+            "node index from $(left_xi_index) to $(right_xi_index).")
     best = abs(left.F) <= abs(right.F) ? left : right
-    CanonicalBracketState{TXI,TF,TW,TX}(left, right, best, right.xi - left.xi)
+    CanonicalBracketState{TXI,TF,TW,TX}(
+        left, right, best, right.xi - left.xi, left_xi_index)
 end
 
 function _canonical_sample(xi, w, x, dict, moments)
     CanonicalSample(xi,
         eval_moment_error(w, x, dict[end], moments[end]),
         w, x)
+end
+
+function _canonical_xi_index(sample::CanonicalSample)
+    matches = findall(==(sample.xi), sample.x)
+    length(matches) == 1 ||
+        _canonical_refinement_error("expected exactly one node fixed at " *
+            "xi=$(sample.xi), found $(length(matches)).")
+    only(matches)
 end
 
 function _canonical_bracket_state(first::CanonicalSample,
@@ -575,10 +599,10 @@ end
 
 function _accept_canonical_step(compute_one, label, dict, moments, xi, w_seed, x_seed;
         verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
-        canonical_lost_digits::Real=2, options...)
+        canonical_lost_digits::Real=2, mads_dx=nothing, options...)
     converged, w, x, diag =
         compute_one(dict, moments, xi, w_seed, x_seed;
-            verbose, config, options...)
+            verbose, config, mads_dx, options...)
     if converged
         return true, w, x, diag
     end
@@ -605,6 +629,7 @@ function _try_canonical_step(compute_one, label, dict, moments, xi_prev, target,
         accepted, w, x, last_diagnostic =
             _accept_canonical_step(compute_one, label, dict, moments, trial,
                 w_prev, x_prev; verbose, config, canonical_lost_digits,
+                mads_dx=abs(trial - xi_prev),
                 options...)
         accepted && return true, trial, w, x, last_diagnostic
 
@@ -623,7 +648,7 @@ function _try_canonical_step(compute_one, label, dict, moments, xi_prev, target,
     end
 
     verbose && println("$(label): not converged for $(target) " *
-        "[$(_format_newton_diagnostic(last_diagnostic))]")
+        "[$(_format_solver_diagnostic(last_diagnostic))]")
     false, trial, w_prev, x_prev, last_diagnostic
 end
 
@@ -742,9 +767,8 @@ function _compute_principal_with_canonical_recovery(solve_principal, principal_a
     last_diag = nothing
 
     for refinement in 0:_MAX_PRINCIPAL_RECOVERY_REFINEMENTS
-        seed = state.best
         converged, last_w, last_x, last_diag =
-            solve_principal(seed.w, seed.x)
+            solve_principal(state)
         if converged || principal_accepts(last_diag)
             return converged, last_w, last_x, last_diag
         end
@@ -756,7 +780,7 @@ function _compute_principal_with_canonical_recovery(solve_principal, principal_a
             break
         end
 
-        verbose && println("$(principal_label): Newton failed; refining " *
+        verbose && println("$(principal_label): nonlinear solve failed; refining " *
             "saved canonical bracket before retry $(refinement + 1) of " *
             "$(_MAX_PRINCIPAL_RECOVERY_REFINEMENTS).")
         refined_state = _refine_canonical_bracket(
@@ -784,7 +808,7 @@ function compute_upper_principal_representation(dict, moments, w0, x0;
         if e isa InterruptException
             rethrow()
         end
-        false, w0, x0, _newton_exception_diagnostic(e)
+        false, w0, x0, _solver_exception_diagnostic(e)
     end
 end
 
@@ -806,7 +830,7 @@ function compute_lower_canonical_representation(dict, moments, xi, w0, x0;
             end
             println("ERROR THROWN at $(xi) in computation of two-point lower canonical")
             @show e
-            return false, w0, x0, _newton_exception_diagnostic(e)
+            return false, w0, x0, _solver_exception_diagnostic(e)
         end
     end
 
@@ -843,7 +867,7 @@ function compute_lower_canonical_representation(dict, moments, xi, w0, x0;
         end
         println("ERROR THROWN at $(xi) in computation of lower canonical")
         @show e
-        false, w0, x0, _newton_exception_diagnostic(e)
+        false, w0, x0, _solver_exception_diagnostic(e)
     end
 end
 
@@ -871,7 +895,7 @@ function estimate_lower_canonical_representation(dict, moments, a, b, w0, x0;
         error("Lower canonical sweep failed to locate a next-moment " *
               "sign change within the adaptive sweep budget. Check the basis " *
               "or increase max_adaptive_steps/canonical_lost_digits if the " *
-              "Newton residuals are acceptable.")
+              "nonlinear residuals are acceptable.")
     end
     seed
 end
@@ -892,7 +916,7 @@ function compute_lower_principal_representation(dict, moments, w0, x0;
         if e isa InterruptException
             rethrow()
         end
-        false, w0, x0, _newton_exception_diagnostic(e)
+        false, w0, x0, _solver_exception_diagnostic(e)
     end
 end
 
@@ -928,7 +952,7 @@ function compute_canonical_both_ends(dict, moments, ξ, w0, x0;
             rethrow()
         end
         verbose && println("compute_canonical_both_ends: error at ξ=$(ξ): ", e)
-        false, w0, x0, _newton_exception_diagnostic(e)
+        false, w0, x0, _solver_exception_diagnostic(e)
     end
 end
 
@@ -992,14 +1016,14 @@ left-Radau rule (LP of `c^{n_dict-1}`) padded with `b` at weight 0; ξ_seed =
 is `(lp_x[end-1], radau_x[end])`.
 
 The sweep finds adjacent ξ values where the next-moment residual `F(ξ)` changes
-sign. The better endpoint seeds the final `UpperPrincipalOdd` Newton solve. If
-that Newton solve fails, bounded secant refinement tightens the retained
+sign. The better endpoint seeds the final `UpperPrincipalOdd` nonlinear solve.
+If that solve fails, bounded secant refinement tightens the retained
 canonical bracket before retrying.
 
 Requires `iseven(length(dict))`.
 
 Returns `(converged, w, x, diag)` where `diag` is `nothing` if the ξ continuation
-step failed early; otherwise a Newton diagnostic like `solve_system`
+step failed early; otherwise a nonlinear-solver diagnostic like `solve_system`
 (residual norms vs `ftol`, or `:error` if the solver threw). A final solve
 within `lobatto_lost_digits` decimal digits of `ftol` is accepted with a
 warning when `verbose=true`.
@@ -1064,21 +1088,22 @@ function compute_lobatto_step(dict, moments, lp_w, lp_x, radau_w, radau_x,
         return false, seed_w, seed_x, nothing
     end
 
-    # Final Newton on UpperPrincipalOdd: same fixed structure as the canonical
+    # Final solve on UpperPrincipalOdd: same fixed structure as the canonical
     # (a, b at indices 1 and l_rule), but now ξ is unfixed and the system is
     # solving for all 2l moments at once. The canonical seed is already very
     # close to the true Lobatto rule, so this converges quickly.
     rule = UpperPrincipalOdd(dict, moments)
-    solve_lobatto = function (w_seed, x_seed)
+    solve_lobatto = function (state)
+        seed = state.best
         try
-            solve_system(rule, w_seed, x_seed;
-                verbose, options...)
+            solve_system(rule, seed.w, seed.x;
+                verbose, mads_bracket=state, options...)
         catch e
             if e isa InterruptException
                 rethrow()
             end
-            println("compute_lobatto_step: error in final UpperPrincipalOdd Newton: ", e)
-            false, w_seed, x_seed, _newton_exception_diagnostic(e)
+            println("compute_lobatto_step: error in final UpperPrincipalOdd solve: ", e)
+            false, seed.w, seed.x, _solver_exception_diagnostic(e)
         end
     end
     compute_one_both_ends = _canonical_both_ends_solver(position_of_xi)
@@ -1106,7 +1131,7 @@ end
         add_endpoint = nothing, max_adaptive_steps = 32,
         canonical_lost_digits = nothing,
         principal_lost_digits = nothing,
-        lobatto_lost_digits = nothing, solver = :newton, options...)
+        lobatto_lost_digits = nothing, differentiable = true, options...)
 
 Compute the sequence of generalized Gaussian quadrature rules associated with
 `dict`. Returns the final rule together with all intermediate principal
@@ -1160,25 +1185,27 @@ Keyword arguments:
   explicitly.
 - `verbose`: print progress information during the continuation.
 - `max_adaptive_steps`: maximum midpoint retries per canonical continuation
-  target when Newton fails from the previous converged continuation point.
+  target when a nonlinear solve fails from the previous converged point.
 - `canonical_lost_digits`: extra decimal digits by which intermediate
-  canonical Newton residuals may miss `ftol` and still be accepted with a
+  canonical nonlinear residuals may miss `ftol` and still be accepted with a
   warning when `verbose=true`. Default `nothing` uses
   `canonical_lost_digits(T)`, where `T` is the promoted type of `dict` and
   `moments`, increased if needed to `ceil(orthogonalization_digits_lost/2)`
   for bases returned by
   `orthogonalize_basis`.
 - `lobatto_lost_digits`: same lost-digit allowance for the final
-  Gauss-Lobatto Newton solve, with a warning when `verbose=true`. Default
+  Gauss-Lobatto solve, with a warning when `verbose=true`. Default
   `nothing` uses the same policy as `lobatto_lost_digits(T)`.
 - `principal_lost_digits`: same lost-digit allowance for non-Lobatto principal
-  Newton solves. Default `nothing` uses `principal_lost_digits(T)`, which is 0
+  solves. Default `nothing` uses `principal_lost_digits(T)`, which is 0
   unless overridden, then applies the orthogonalization floor.
-- `solver`: nonlinear solver selector. `:newton` is the default and current
-  multidimensional implementation. If no first derivatives are available, the
-  code warns and switches to the derivative-free fallback scaffold. At present
-  that fallback is implemented only for the initial one-point rule.
-- `options`: forwarded to the nonlinear solver used at every refinement step.
+- `differentiable`: when `true`, use Newton solves with analytic derivatives
+  where available and centered finite differences for missing derivatives.
+  Released support-boundary seeds use a second-order one-sided stencil until
+  they move into the interior. When `false`, use Brent for the one-point rule
+  and MADS for multidimensional solves.
+- `options`: forwarded to differentiable nonlinear and scalar root solves.
+  MADS uses an internal focused OrthoMADS policy.
 """
 function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = nothing;
         measure = nothing, verbose = false, principal::Symbol = :lower,
@@ -1187,8 +1214,14 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
         canonical_lost_digits = nothing,
         principal_lost_digits = nothing,
         lobatto_lost_digits = nothing,
-        solver::Symbol = :newton,
+        differentiable::Bool = true,
         options...)
+
+    # `solver` was replaced by `differentiable`; reject it here instead of
+    # silently forwarding it through the generic nonlinear-solver options.
+    :solver in keys(options) &&
+        throw(ArgumentError("use differentiable=true or differentiable=false instead of solver"))
+
     n = length(dict)
     add_endpoint_resolved = resolve_add_endpoint(principal, add_endpoint)
     # Automatically determine stop_at_odd_gauss based on dict length
@@ -1264,14 +1297,14 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
         return w, x, xi_checkpoints, w_checkpoints, x_checkpoints
     end
 
-    # -- Can we use derivatives? If yes, use a Newton solver.
-    solver_resolved = _resolve_gauss_solver(dict, solver)
-    _require_multidimensional_solver_available(solver_resolved, n)
+    # Select one nonlinear solver mode for all multidimensional continuation
+    # solves. The scalar initializer uses Newton or Brent directly.
+    solver_mode = _resolve_gauss_solver_mode(dict, differentiable)
 
     verbose && println("Computing initial one point rule")
     w, x = compute_one_point_rule(dict[1:2], moments[1:2];
         verbose, config, principal_lost_digits=principal_lost_digits_resolved,
-        solver=solver_resolved, options...)
+        differentiable, options...)
     verbose && println("One point quadrature rule is: ", x, ", ", w)
 
     # Add initial one-point rule as second checkpoint
@@ -1329,11 +1362,11 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
                 _gengauss_debug_println("DEBUG: length(moments[1:tot_moments]): ", length(moments[1:tot_moments]))
                 if step.branch == :upper
                     upper_canonical_state =
-                        estimate_upper_canonical_representation(dict[1:tot_moments], moments[1:tot_moments], a, b, w0, x0; verbose, config, max_adaptive_steps, canonical_lost_digits=canonical_lost_digits_resolved, options...)
+                        estimate_upper_canonical_representation(dict[1:tot_moments], moments[1:tot_moments], a, b, w0, x0; verbose, config, max_adaptive_steps, canonical_lost_digits=canonical_lost_digits_resolved, solver_mode, options...)
                     lower_canonical_state = nothing
                 elseif step.branch == :lower
                     lower_canonical_state =
-                        estimate_lower_canonical_representation(dict[1:tot_moments], moments[1:tot_moments], a, b, w0, x0; verbose, config, max_adaptive_steps, canonical_lost_digits=canonical_lost_digits_resolved, options...)
+                        estimate_lower_canonical_representation(dict[1:tot_moments], moments[1:tot_moments], a, b, w0, x0; verbose, config, max_adaptive_steps, canonical_lost_digits=canonical_lost_digits_resolved, solver_mode, options...)
                     upper_canonical_state = nothing
                 else
                     error("Unknown branch: ", step.branch)
@@ -1343,11 +1376,14 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
                 _gengauss_debug_println("DEBUG: len moments: ", length(moments[1:tot_moments]))
                 principal_label =
                     "upper principal representation $(upper_principal_index + 1)"
-                solve_principal = (w_seed, x_seed) ->
+                solve_principal = function (state)
+                    seed = state.best
                     compute_upper_principal_representation(
                         dict[1:tot_moments], moments[1:tot_moments],
-                        w_seed, x_seed;
-                        verbose, config, options...)
+                        seed.w, seed.x;
+                        verbose, config, solver_mode,
+                        mads_bracket=state, options...)
+                end
                 converged, w, x, principal_diag =
                     _compute_principal_with_canonical_recovery(
                         solve_principal,
@@ -1359,7 +1395,7 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
                         upper_canonical_state;
                         verbose, config, max_adaptive_steps,
                         canonical_lost_digits=canonical_lost_digits_resolved,
-                        options...)
+                        solver_mode, options...)
                 xi = xi_extractor(x)
                 upper_principal_index += 1
                 _require_principal_convergence(
@@ -1396,11 +1432,14 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
                 _gengauss_debug_println("DEBUG: len moments: ", length(moments[1:tot_moments]))
                 principal_label =
                     "lower principal representation $(lower_principal_index + 1)"
-                solve_principal = (w_seed, x_seed) ->
+                solve_principal = function (state)
+                    seed = state.best
                     compute_lower_principal_representation(
                         dict[1:tot_moments], moments[1:tot_moments],
-                        w_seed, x_seed;
-                        verbose, config, options...)
+                        seed.w, seed.x;
+                        verbose, config, solver_mode,
+                        mads_bracket=state, options...)
+                end
                 converged, w, x, principal_diag =
                     _compute_principal_with_canonical_recovery(
                         solve_principal,
@@ -1412,7 +1451,7 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
                         lower_canonical_state;
                         verbose, config, max_adaptive_steps,
                         canonical_lost_digits=canonical_lost_digits_resolved,
-                        options...)
+                        solver_mode, options...)
                 xi = xi_extractor(x)
                 lower_principal_index += 1
                 _require_principal_convergence(
@@ -1479,7 +1518,7 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
                 verbose, max_adaptive_steps,
                 canonical_lost_digits=canonical_lost_digits_resolved,
                 lobatto_lost_digits=lobatto_lost_digits_resolved,
-                options...)
+                solver_mode, options...)
         if converged_lob
             verbose && println("  Lobatto rule found:     x = $(x_lob),  w = $(w_lob)")
             push!(xi_checkpoints, xi_extractor(x_lob))
@@ -1489,8 +1528,8 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
         else
             lobatto_diag_str =
                 lobatto_diag === nothing ?
-                "unavailable (e.g. continuation ξ seed not found before final Newton)." :
-                _format_newton_diagnostic(lobatto_diag)
+                "unavailable (e.g. continuation ξ seed not found before final solve)." :
+                _format_solver_diagnostic(lobatto_diag)
             lobatto_lost_digits_hint =
                 lobatto_diag === nothing || (:error in keys(lobatto_diag)) ?
                 "" :

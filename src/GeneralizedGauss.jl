@@ -1,6 +1,7 @@
 module GeneralizedGauss
 
 using BasisFunctions, LinearAlgebra, NLsolve, Random
+import NOMAD
 
 import BasisFunctions: dict_moment
 
@@ -28,5 +29,6 @@ include("root_solvers.jl")
 include("quadrule.jl")
 include("representations.jl")
 include("gengauss.jl")
+include("mads.jl")
 
 end # module

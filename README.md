@@ -138,8 +138,14 @@ basis = quadbasis(funs, fun_derivs, a, b)
 
 where:
 - `funs[i](x)` evaluates the `i`-th basis function,
-- `fun_derivs[i](x)` evaluates its first derivative,
+- `fun_derivs[i](x)` evaluates its first derivative, or `fun_derivs=nothing`
+  when analytic derivatives are unavailable,
 - `[a,b]` is the support interval.
+
+By default, missing first derivatives are approximated with finite
+differences during the nonlinear solves. For a genuinely nondifferentiable 
+basis, pass `differentiable=false`; this selectsnBrent for the one-point 
+solve and NOMAD OrthoMADS for multidimensional solves.
 
 For a mapped Legendre polynomial basis, this package provides function vectors
 that directly support both Float64 and BigFloat types:
@@ -243,7 +249,7 @@ Practical notes:
   which preserves the `BigFloat` precision, but may lose some digits of
   precision through the ill-conditioned matrix inversion.
 
-By default, `GeneralizedGauss` uses `10*eps(BigFloat)` as the Newton solver
+By default, `GeneralizedGauss` uses `10*eps(BigFloat)` as the nonlinear solver
 tolerance, so overriding `solver_tolerance(::Type{BigFloat})` is optional.
 Intermediate canonical solves use a lost-digits acceptance tolerance of 2
 decimal digits above `ftol`; override it with
@@ -253,6 +259,11 @@ Principal and final Gauss-Lobatto solves use `principal_lost_digits` and
 For bases returned by `orthogonalize_basis`, the resolved value is enlarged to
 at least `ceil(digits_lost/2)`, where `digits_lost` is the decimal digit-loss
 estimate printed by orthogonalization.
+
+The derivative-free MADS path evaluates basis functions in `BigFloat` and
+returns `BigFloat` weights, nodes, and checkpoints when the basis uses
+`BigFloat`. NOMAD itself uses `Float64` coordinates, so MADS coordinate
+accuracy is limited to roughly `Float64` precision.
 
 ## 7) Examples
 

@@ -106,3 +106,47 @@ function maybe_funeval_deriv(basis::Dictionary, i, x, order::Int)
         rethrow(e)
     end
 end
+
+"""
+Approximate a missing first derivative with a support-aware finite difference.
+
+Use a centered stencil in the interior. Continuation can release a zero-weight
+support endpoint, so use a second-order one-sided stencil when the boundary
+makes a centered stencil impossible.
+"""
+function finite_diff_funeval_deriv(basis::Dictionary, i, x)
+    h = cbrt(eps(one(x))) * max(one(x), abs(x))
+    a = leftendpoint(support(basis))
+    b = rightendpoint(support(basis))
+
+    if (isfinite(a) && x < a) || (isfinite(b) && x > b)
+        throw(ArgumentError("Cannot approximate a derivative outside the basis support at x=$(x)."))
+    end
+
+    if isfinite(a) && x - a < h
+        h = isfinite(b) ? min(h, (b - x) / 2) : h
+        h > zero(h) ||
+            throw(ArgumentError("Cannot form a forward derivative stencil at x=$(x)."))
+        return (-3funeval(basis, i, x) + 4funeval(basis, i, x + h) -
+                funeval(basis, i, x + 2h)) / (2h)
+    end
+    if isfinite(b) && b - x < h
+        h = isfinite(a) ? min(h, (x - a) / 2) : h
+        h > zero(h) ||
+            throw(ArgumentError("Cannot form a backward derivative stencil at x=$(x)."))
+        return (3funeval(basis, i, x) - 4funeval(basis, i, x - h) +
+                funeval(basis, i, x - 2h)) / (2h)
+    end
+
+    (funeval(basis, i, x + h) - funeval(basis, i, x - h)) / (2h)
+end
+
+"""
+Evaluate an analytic first derivative when available and otherwise use a
+support-aware finite difference. This keeps exact basis derivatives in mixed
+bases.
+"""
+function funeval_deriv_or_finite_diff(basis::Dictionary, i, x)
+    deriv = maybe_funeval_deriv(basis, i, x, 1)
+    deriv === nothing ? finite_diff_funeval_deriv(basis, i, x) : deriv
+end

@@ -112,12 +112,16 @@ end
 
 # Evaluate the Jacobian of the system of equations
 function jacobian!(J, sys::QuadRuleSystem, newton_x)
+    jacobian!(J, sys, newton_x, funeval_deriv)
+end
+
+function jacobian!(J, sys::QuadRuleSystem, newton_x, eval_deriv)
     # w,x = newton_to_quad(sys, newton_x)
     # jacobian!(J, sys, w, x, basis(sys))
     L = quadlength(sys)
     w,x = sys.scratch_w[L], sys.scratch_x[L]
     newton_to_quad!(sys, w, x, newton_x)
-    jacobian!(J, sys, w, x, basis(sys))
+    jacobian!(J, sys, w, x, basis(sys), eval_deriv)
 end
 
 
@@ -266,6 +270,10 @@ function quad_to_newton!(sys::QuadRuleFixedPoints, w, x, newton_x)
 end
 
 function jacobian!(J, sys::QuadRuleFreePoints, w, x, basis)
+    jacobian!(J, sys, w, x, basis, funeval_deriv)
+end
+
+function jacobian!(J, sys::QuadRuleFreePoints, w, x, basis, eval_deriv)
     l = length(w)
 
     # We are computing the derivative of \sum_{i=1}^l w_i ϕ_j(x_i) wrt w_i and x_i
@@ -277,8 +285,16 @@ function jacobian!(J, sys::QuadRuleFreePoints, w, x, basis)
     end
     # - Then the weight times the derivatives of the basis functions
     for i in 1:l
-        for j in 1:length(basis)
-            J[j,l+i] = w[i] * funeval_deriv(basis, j, x[i])
+        if iszero(w[i])
+            # Continuation seeds can add a support endpoint with zero weight.
+            # Its node column is exactly zero, so no basis derivative is needed.
+            for j in 1:length(basis)
+                J[j,l+i] = zero(eltype(J))
+            end
+        else
+            for j in 1:length(basis)
+                J[j,l+i] = w[i] * eval_deriv(basis, j, x[i])
+            end
         end
     end
     J
@@ -286,6 +302,10 @@ end
 
 
 function jacobian!(J, sys::QuadRuleFixedPoints, w, x, basis)
+    jacobian!(J, sys, w, x, basis, funeval_deriv)
+end
+
+function jacobian!(J, sys::QuadRuleFixedPoints, w, x, basis, eval_deriv)
     l = length(w)
     P = nbfixed(sys)
 
@@ -299,8 +319,16 @@ function jacobian!(J, sys::QuadRuleFixedPoints, w, x, basis)
     end
     # - Then the weight times the derivatives of the basis functions
     for (k,i) in enumerate(sys.free_idxs)
-        for j in 1:length(basis)
-            J[j,l+k] = w[i] * funeval_deriv(basis, j, x[i])
+        if iszero(w[i])
+            # Continuation seeds can add a support endpoint with zero weight.
+            # Its node column is exactly zero, so no basis derivative is needed.
+            for j in 1:length(basis)
+                J[j,l+k] = zero(eltype(J))
+            end
+        else
+            for j in 1:length(basis)
+                J[j,l+k] = w[i] * eval_deriv(basis, j, x[i])
+            end
         end
     end
     J
