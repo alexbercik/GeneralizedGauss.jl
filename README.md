@@ -143,8 +143,8 @@ where:
 - `[a,b]` is the support interval.
 
 By default, missing first derivatives are approximated with finite
-differences during the nonlinear solves. For a genuinely nondifferentiable 
-basis, pass `differentiable=false`; this selectsnBrent for the one-point 
+differences during the nonlinear solves. For a genuinely nondifferentiable
+basis, pass `differentiable=false`; this selects Brent for the one-point
 solve and NOMAD OrthoMADS for multidimensional solves.
 
 For a mapped Legendre polynomial basis, this package provides function vectors
@@ -263,7 +263,9 @@ estimate printed by orthogonalization.
 The derivative-free MADS path evaluates basis functions in `BigFloat` and
 returns `BigFloat` weights, nodes, and checkpoints when the basis uses
 `BigFloat`. NOMAD itself uses `Float64` coordinates, so MADS coordinate
-accuracy is limited to roughly `Float64` precision.
+accuracy is limited to roughly `Float64` precision. MADS searches only the
+free nodes; the weights are recovered by a least-squares projection for each
+node trial.
 
 ## 7) Examples
 

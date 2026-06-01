@@ -451,6 +451,7 @@ function estimate_upper_canonical_representation(dict, moments, a, b, w0, x0;
 end
 
 const _CANONICAL_SWEEP_INITIAL_SUBDIVISIONS = 9
+const _MADS_CANONICAL_SWEEP_INITIAL_SUBDIVISIONS = 6
 const _MAX_PRINCIPAL_RECOVERY_REFINEMENTS = 3
 
 struct CanonicalSample{TXI,TF,TW,TX}
@@ -700,7 +701,13 @@ function _estimate_canonical_representation_by_sweep(compute_one, label,
     sweep_start = dir == :left_to_right ? a : b
     sweep_end = dir == :left_to_right ? b : a
     interval = abs(sweep_end - sweep_start)
-    dx = interval / _CANONICAL_SWEEP_INITIAL_SUBDIVISIONS
+    # MADS is substantially more expensive per solve, so start with fewer
+    # continuation points and let the existing adaptive midpoint fallback
+    # reduce the step only when a larger derivative-free solve fails.
+    subdivisions = get(options, :solver_mode, nothing) == :mads ?
+        _MADS_CANONICAL_SWEEP_INITIAL_SUBDIVISIONS :
+        _CANONICAL_SWEEP_INITIAL_SUBDIVISIONS
+    dx = interval / subdivisions
     dict_inner = dict[1:end-1] # -- we want to be exact for all but the last basis function & moment
     moments_inner = moments[1:end-1] # -- the last moment will be used to determine the sign change
 
@@ -1216,11 +1223,6 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
         lobatto_lost_digits = nothing,
         differentiable::Bool = true,
         options...)
-
-    # `solver` was replaced by `differentiable`; reject it here instead of
-    # silently forwarding it through the generic nonlinear-solver options.
-    :solver in keys(options) &&
-        throw(ArgumentError("use differentiable=true or differentiable=false instead of solver"))
 
     n = length(dict)
     add_endpoint_resolved = resolve_add_endpoint(principal, add_endpoint)

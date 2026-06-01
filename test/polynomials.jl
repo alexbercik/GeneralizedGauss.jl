@@ -227,8 +227,6 @@ end
     w_brent, x_brent = compute_gauss_rule(
         basis_no_deriv, moments; differentiable=false)
     assert_rule_matches(w_brent, x_brent, [2.0], [0.0])
-    @test_throws ArgumentError compute_gauss_rule(
-        basis_no_deriv, moments; solver=:brent)
 
     w_two, x_two = compute_gauss_rule(basis_no_deriv, moments; principal=:upper)
     assert_rule_matches(w_two, x_two, [1.0, 1.0], [-1.0, 1.0])
@@ -311,29 +309,34 @@ end
 
     # Invalid MADS trials must hit the extreme barrier before basis evaluation.
     _, _, order_outputs = GeneralizedGauss._mads_trial_outputs(
-        rule, [1.0, 1.0, 0.5, -0.5], Float64)
+        rule, [0.5, -0.5], Float64)
     @test order_outputs == [Inf, 1.0]
     @test evaluation_count[] == 0
 
     _, _, support_outputs = GeneralizedGauss._mads_trial_outputs(
-        rule, [1.0, 1.0, -2.0, 0.5], Float64)
+        rule, [-2.0, 0.5], Float64)
     @test support_outputs == [Inf, 1.0]
     @test evaluation_count[] == 0
 
     _, _, valid_outputs = GeneralizedGauss._mads_trial_outputs(
-        rule, [1.0, 1.0, -0.5, 0.5], Float64)
-    @test valid_outputs[1] ≈ 1 / 36
+        rule, [-0.5, 0.5], Float64)
+    @test valid_outputs[1] < 1 / 36
     @test valid_outputs[2] == -1.0
     @test evaluation_count[] > 0
     @test GeneralizedGauss._mads_rule_is_valid(
-        rule, [-1.0, 3.0], [-0.5, 0.5])
+        [-1.0, 3.0], [-0.5, 0.5], -1.0, 1.0)
 
-    # The optimization vector contains all weights followed by free nodes.
-    @test GeneralizedGauss.quad_to_newton(
-        rule, [1.0, 1.0], [-0.5, 0.5]) == [1.0, 1.0, -0.5, 0.5]
+    # MADS searches only free nodes. Weights are projected with a least-squares
+    # solve in the rule's working type for every valid node trial.
+    projected_w = zeros(2)
+    basis_matrix = Matrix{Float64}(undef, length(basis), 2)
+    objective = GeneralizedGauss._mads_project_weights!(
+        projected_w, basis_matrix, rule, [-inv(sqrt(3.0)), inv(sqrt(3.0))])
+    @test projected_w ≈ [1.0, 1.0]
+    @test objective < eps(Float64)
     canonical_mesh = GeneralizedGauss._mads_canonical_initial_mesh(
-        rule, [1.0, 2.0], 0.1)
-    @test canonical_mesh == [0.1, 0.1, 0.1, 0.1]
+        rule, 0.1)
+    @test canonical_mesh == [0.1, 0.1]
 
     fixed_rule = GeneralizedGauss.UpperPrincipalOdd(
         monomial_basis_without_derivatives(4), moments)
@@ -347,13 +350,12 @@ end
 
     # Only the released xi node receives NOMAD bounds. Support and ordering
     # remain extreme-barrier checks for every node.
-    @test lower == [-Inf, -Inf, -Inf, -0.4]
-    @test upper == [Inf, Inf, Inf, 0.4]
-    @test GeneralizedGauss.quad_to_newton(
-        fixed_rule, left.w, left.x) == [0.2, 1.6, 0.2, -0.4]
+    @test lower == [-0.4]
+    @test upper == [0.4]
+    @test GeneralizedGauss._mads_node_variables(fixed_rule, left.x) == [-0.4]
     principal_mesh = GeneralizedGauss._mads_initial_mesh(
-        fixed_rule, left.w, 0.1, bracket)
-    @test principal_mesh ≈ [0.64, 0.64, 0.64, 0.8]
+        fixed_rule, 0.1, bracket)
+    @test principal_mesh ≈ [0.8]
 
     bf_basis = monomial_basis_without_derivatives(4, BigFloat)
     bf_rule = GeneralizedGauss.LowerPrincipalOdd(
@@ -374,41 +376,59 @@ end
 end
 
 @testset "Automatic finite-difference and MADS paths" begin
+    analytic_basis3 = monomial_basis(3)
+    analytic_basis4 = monomial_basis(4)
     basis3 = monomial_basis_without_derivatives(3)
     moments3 = monomial_moments(3)
     basis4 = monomial_basis_without_derivatives(4)
     moments4 = monomial_moments(4)
 
+    w_radau_analytic, x_radau_analytic =
+        compute_gauss_rule(analytic_basis3, moments3)
+    w_gauss_analytic, x_gauss_analytic =
+        compute_gauss_rule(analytic_basis4, moments4)
+    w_lobatto_analytic, x_lobatto_analytic =
+        compute_gauss_rule(analytic_basis4, moments4; principal=:upper)
+
     w_radau_fd, x_radau_fd =
         @test_logs (:warn, r"Analytic first derivatives are missing") compute_gauss_rule(
             basis3, moments3)
     assert_rule_matches(w_radau_fd, x_radau_fd, [0.5, 1.5], [-1.0, 1 / 3])
+    assert_rule_matches(w_radau_fd, x_radau_fd, w_radau_analytic, x_radau_analytic)
 
     w_gauss_fd, x_gauss_fd =
         @test_logs (:warn, r"Analytic first derivatives are missing") compute_gauss_rule(
             basis4, moments4)
     assert_rule_matches(
         w_gauss_fd, x_gauss_fd, [1.0, 1.0], [-inv(sqrt(3.0)), inv(sqrt(3.0))])
+    assert_rule_matches(w_gauss_fd, x_gauss_fd, w_gauss_analytic, x_gauss_analytic)
 
     w_lobatto_fd, x_lobatto_fd =
         @test_logs (:warn, r"Analytic first derivatives are missing") compute_gauss_rule(
             basis4, moments4; principal=:upper)
     assert_rule_matches(
         w_lobatto_fd, x_lobatto_fd, [1 / 3, 4 / 3, 1 / 3], [-1.0, 0.0, 1.0])
+    assert_rule_matches(
+        w_lobatto_fd, x_lobatto_fd, w_lobatto_analytic, x_lobatto_analytic)
 
     w_radau_mads, x_radau_mads = compute_gauss_rule(
         basis3, moments3; differentiable=false)
     assert_rule_matches(w_radau_mads, x_radau_mads, [0.5, 1.5], [-1.0, 1 / 3])
+    assert_rule_matches(
+        w_radau_mads, x_radau_mads, w_radau_analytic, x_radau_analytic)
 
     w_gauss_mads, x_gauss_mads = compute_gauss_rule(
         basis4, moments4; differentiable=false)
     assert_rule_matches(
         w_gauss_mads, x_gauss_mads, [1.0, 1.0], [-inv(sqrt(3.0)), inv(sqrt(3.0))])
+    assert_rule_matches(w_gauss_mads, x_gauss_mads, w_gauss_analytic, x_gauss_analytic)
 
     w_lobatto_mads, x_lobatto_mads = compute_gauss_rule(
         basis4, moments4; principal=:upper, differentiable=false)
     assert_rule_matches(
         w_lobatto_mads, x_lobatto_mads, [1 / 3, 4 / 3, 1 / 3], [-1.0, 0.0, 1.0])
+    assert_rule_matches(
+        w_lobatto_mads, x_lobatto_mads, w_lobatto_analytic, x_lobatto_analytic)
 
     bf_basis = monomial_basis_without_derivatives(3, BigFloat)
     bf_moments = monomial_moments(3, BigFloat)
