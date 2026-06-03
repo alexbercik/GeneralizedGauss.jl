@@ -234,10 +234,10 @@ end
     shifted_moments = [2.0, 1.0]
     redirect_stdout(devnull) do
         @test_throws ErrorException compute_gauss_rule(
-            basis_newton, shifted_moments; maxiter=0, principal_lost_digits=0)
+            basis_newton, shifted_moments; maxiter=0, lost_digits=0)
     end
     w_lost, x_lost = compute_gauss_rule(
-        basis_newton, shifted_moments; maxiter=0, principal_lost_digits=400)
+        basis_newton, shifted_moments; maxiter=0, lost_digits=400)
     @test isfinite(first(x_lost))
     @test isfinite(first(w_lost))
     @test abs(2 * first(x_lost) - 1) > 1e-4
@@ -373,6 +373,103 @@ end
         nothing, -Inf, Inf)
     infinite_rule = GeneralizedGauss.LowerPrincipalOdd(infinite_basis, moments)
     @test_throws ErrorException GeneralizedGauss._mads_support_bounds(infinite_rule)
+end
+
+@testset "Relaxed intermediate solver tolerances" begin
+    moments4 = monomial_moments(4)
+    basis4 = monomial_basis(4)
+    rule = GeneralizedGauss.LowerPrincipalOdd(basis4, moments4)
+    approximate_w = [1.0, 1.0]
+    approximate_x = [-0.58, 0.58]
+
+    strict_tolerance, active_tolerance =
+        GeneralizedGauss._resolve_solver_tolerances(Float64, 1e-2)
+    @test strict_tolerance == GeneralizedGauss.solver_tolerance(Float64)
+    @test active_tolerance == 1e-2
+    @test GeneralizedGauss._resolve_solver_tolerances(
+        Float64, strict_tolerance / 10) == (strict_tolerance, strict_tolerance)
+
+    # Newton may stop at the relaxed tolerance without changing the strict
+    # baseline used by diagnostics and lost-digit fallback acceptance.
+    newton_converged, _, _, newton_diag = GeneralizedGauss.solve_system(
+        rule, approximate_w, approximate_x;
+        intermediate_tolerance=active_tolerance, iterations=0)
+    @test newton_converged
+    @test newton_diag.tolerance == strict_tolerance
+    @test newton_diag.active_tolerance == active_tolerance
+    @test newton_diag.tolerance < newton_diag.residual_norm <=
+          newton_diag.active_tolerance
+    @test newton_diag.ratio == newton_diag.residual_norm / strict_tolerance
+    @test !GeneralizedGauss._lost_digits_accepts(newton_diag, 12)
+    @test GeneralizedGauss._lost_digits_accepts(newton_diag, 13)
+    @test occursin("strict_ftol",
+        GeneralizedGauss._format_solver_diagnostic(newton_diag))
+    @test occursin("active_ftol",
+        GeneralizedGauss._format_solver_diagnostic(newton_diag))
+
+    # MADS uses the same active tolerance after applying its Float64 floor.
+    mads_converged, _, _, mads_diag = GeneralizedGauss._solve_system_mads(
+        rule, approximate_w, approximate_x;
+        intermediate_tolerance=active_tolerance, max_bb_eval=0)
+    @test mads_converged
+    @test mads_diag.tolerance == GeneralizedGauss._mads_solver_tolerance(Float64)
+    @test mads_diag.active_tolerance == active_tolerance
+    @test mads_diag.tolerance < mads_diag.residual_norm <=
+          mads_diag.active_tolerance
+
+    # The scalar initializer can also return a deliberately loose seed when it
+    # is used as the first checkpoint of a larger continuation.
+    scalar_basis = quadbasis(
+        Function[x -> one(x), x -> x],
+        Function[x -> zero(x), x -> one(x)],
+        -1.0, 1.0)
+    scalar_w, scalar_x = GeneralizedGauss.compute_one_point_rule(
+        scalar_basis, [2.0, 1.0]; intermediate_tolerance=0.6)
+    @test scalar_w == [2.0]
+    @test scalar_x == [0.0]
+
+    # Public calls reject invalid tolerances even on the one-point short path.
+    for bad_tolerance in (0.0, -1e-3, Inf, NaN)
+        @test_throws ArgumentError compute_gauss_rule(
+            scalar_basis, [2.0, 0.0]; intermediate_tolerance=bad_tolerance)
+    end
+
+    # The returned Gauss and Lobatto rules remain strict in both continuation
+    # directions even when their intermediate checkpoints are relaxed.
+    basis6 = monomial_basis(6)
+    moments6 = monomial_moments(6)
+    for add_endpoint in (:left, :right), principal in (:lower, :upper)
+        w, x = compute_gauss_rule(basis6, moments6;
+            principal, add_endpoint, intermediate_tolerance=1e-6)
+        diag = GeneralizedGauss._quad_rule_diagnostic(basis6, moments6, w, x)
+        @test diag.residual_norm <= diag.tolerance
+    end
+
+    # Odd basis lengths return a strict terminal Radau rule from the main loop.
+    basis5 = monomial_basis(5)
+    moments5 = monomial_moments(5)
+    for (principal, add_endpoint) in ((:lower, :left), (:upper, :right))
+        w, x = compute_gauss_rule(basis5, moments5;
+            principal, add_endpoint, intermediate_tolerance=1e-6)
+        diag = GeneralizedGauss._quad_rule_diagnostic(basis5, moments5, w, x)
+        @test diag.residual_norm <= diag.tolerance
+    end
+
+    # A two-function basis returns its one-point rule directly, so the public
+    # API must not loosen that scalar solve.
+    redirect_stdout(devnull) do
+        @test_throws ErrorException compute_gauss_rule(
+            scalar_basis, [2.0, 1.0];
+            intermediate_tolerance=0.6, maxiter=0, lost_digits=0)
+    end
+
+    # Lobatto failures now report an error instead of computing the skipped
+    # lower-principal Gauss fallback.
+    redirect_stdout(devnull) do
+        @test_throws ErrorException compute_gauss_rule(
+            basis4, moments4; principal=:upper,
+            intermediate_tolerance=1.0, iterations=0)
+    end
 end
 
 @testset "Automatic finite-difference and MADS paths" begin
@@ -511,6 +608,52 @@ end
                 ChebyshevT(6); principal=:upper, add_endpoint)
             assert_rule_matches(w_lobatto, x_lobatto, GLL4_W, GLL4_X)
         end
+    end
+
+    @testset "Radau-only Lobatto continuation skips final Gauss solve" begin
+        for add_endpoint in (:right, :left)
+            w, x, xi_checkpoints, w_checkpoints, x_checkpoints =
+                compute_gauss_rules(
+                    ChebyshevT(6); principal=:upper, add_endpoint)
+
+            assert_rule_matches(w, x, GLL4_W, GLL4_X)
+            @test length(xi_checkpoints) == 6
+            @test length(w_checkpoints) == length(xi_checkpoints)
+            @test length(x_checkpoints) == length(xi_checkpoints)
+
+            # The penultimate checkpoint is the final Radau seed. The old path
+            # inserted the 3-point Gauss rule here before the Lobatto sweep.
+            radau_w = add_endpoint == :right ? GRR3_W : GRL3_W
+            radau_x = add_endpoint == :right ? GRR3_X : GRL3_X
+            assert_rule_matches(w_checkpoints[end - 1],
+                x_checkpoints[end - 1], radau_w, radau_x)
+            assert_rule_matches(w_checkpoints[end], x_checkpoints[end],
+                GLL4_W, GLL4_X)
+        end
+
+        right_output = mktemp() do _, io
+            redirect_stdout(io) do
+                compute_gauss_rule(
+                    ChebyshevT(6); principal=:upper,
+                    add_endpoint=:right, verbose=true)
+            end
+            seekstart(io)
+            read(io, String)
+        end
+        @test occursin("Upper principal representation 2", right_output)
+        @test !occursin("Lower principal representation 2", right_output)
+
+        left_output = mktemp() do _, io
+            redirect_stdout(io) do
+                compute_gauss_rule(
+                    ChebyshevT(6); principal=:upper,
+                    add_endpoint=:left, verbose=true)
+            end
+            seekstart(io)
+            read(io, String)
+        end
+        @test occursin("Lower principal representation 3", left_output)
+        @test !occursin("Lower principal representation 4", left_output)
     end
 
     @testset "Continuation API returns the known terminal Gauss rule" begin

@@ -128,7 +128,8 @@ function _mads_variable_bounds(rule, bracket)
 end
 
 _mads_solver_tolerance(::Type{T}) where {T} =
-    max(solver_tolerance(T), T(10) * T(eps(Float64)))
+    first(_resolve_solver_tolerances(T;
+        tolerance_floor=T(10) * T(eps(Float64))))
 
 const _MADS_LOCAL_MIN_MESH_SIZE = 1e-3
 
@@ -173,20 +174,25 @@ end
 
 function _solve_system_mads(rule, w0, x0; dx=nothing, bracket=nothing,
         verbose=false, max_bb_eval::Int=5000,
-        min_mesh_size::Float64=_MADS_LOCAL_MIN_MESH_SIZE)
+        min_mesh_size::Float64=_MADS_LOCAL_MIN_MESH_SIZE,
+        intermediate_tolerance=nothing)
     0 < min_mesh_size < 1 ||
         error("MADS local minimum mesh size must be between zero and one.")
     T = promote_type(eltype(w0), eltype(x0))
     x_init = quad_to_newton(rule, w0, x0)
-    tol = _mads_solver_tolerance(T)
+    strict_tolerance, active_tolerance =
+        _resolve_solver_tolerances(T, intermediate_tolerance;
+            tolerance_floor=T(10) * T(eps(Float64)))
     w_init, x_quad_init = newton_to_quad(rule, x_init)
     support_bounds = _mads_support_bounds(rule)
 
     # Continuation often supplies an already acceptable rule. Avoid invoking
     # NOMAD in that case, especially when the canonical bracket has collapsed.
     if _mads_rule_is_valid(w_init, x_quad_init, support_bounds...)
-        diag = _solver_diagnostic(rule, x_init, tol)
-        diag.residual_norm <= tol && return true, w_init, x_quad_init, diag
+        diag = _solver_diagnostic(rule, x_init, strict_tolerance,
+            active_tolerance)
+        diag.residual_norm <= active_tolerance &&
+            return true, w_init, x_quad_init, diag
     end
 
     # Some Lobatto canonical steps fix every node. Variable projection reduces
@@ -200,8 +206,9 @@ function _solve_system_mads(rule, w0, x0; dx=nothing, bracket=nothing,
         _mads_rule_is_valid(w_init, x_quad_init, support_bounds...) ||
             error("MADS projected invalid quadrature weights.")
         projected_x = quad_to_newton(rule, w_init, x_quad_init)
-        diag = _solver_diagnostic(rule, projected_x, tol)
-        return diag.residual_norm <= tol, w_init, x_quad_init, diag
+        diag = _solver_diagnostic(rule, projected_x, strict_tolerance,
+            active_tolerance)
+        return diag.residual_norm <= active_tolerance, w_init, x_quad_init, diag
     end
 
     initial_mesh = _mads_initial_mesh(rule,
@@ -212,7 +219,7 @@ function _solve_system_mads(rule, w0, x0; dx=nothing, bracket=nothing,
         _mads_variable_bounds(rule, bracket)
     callback_error = Ref{Any}(nothing)
     eval_count = Ref(0)
-    objective_scale = inv(Float64(tol))^2
+    objective_scale = inv(Float64(active_tolerance))^2
     isfinite(objective_scale) ||
         error("MADS requires a finite Float64 objective scale.")
     center = Float64.(_mads_node_variables(rule, x0))
@@ -220,7 +227,7 @@ function _solve_system_mads(rule, w0, x0; dx=nothing, bracket=nothing,
         error("MADS requires initial coordinates representable as Float64.")
     physical_mesh = initial_mesh
     last_w, last_x, last_diag = w_init, x_quad_init,
-        _solver_diagnostic(rule, x_init, tol)
+        _solver_diagnostic(rule, x_init, strict_tolerance, active_tolerance)
     node_variables_float = zeros(Float64, length(center))
     node_variables = Vector{T}(undef, length(center))
     trial_w = Vector{T}(undef, quadlength(rule))
@@ -279,8 +286,9 @@ function _solve_system_mads(rule, w0, x0; dx=nothing, bracket=nothing,
         _mads_rule_is_valid(last_w, last_x, support_bounds...) ||
             error("NOMAD returned an invalid quadrature rule.")
         selected_x = quad_to_newton(rule, last_w, last_x)
-        last_diag = _solver_diagnostic(rule, selected_x, tol)
-        last_diag.residual_norm <= tol &&
+        last_diag = _solver_diagnostic(rule, selected_x, strict_tolerance,
+            active_tolerance)
+        last_diag.residual_norm <= active_tolerance &&
             return true, last_w, last_x, last_diag
         # Continue at the physical resolution reached by this local solve.
         # This avoids asking NOMAD to polish every continuation step all the

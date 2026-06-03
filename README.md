@@ -208,18 +208,17 @@ just the final call to `compute_gauss_rule`. See the following example:
 
 ```julia
 using BasisFunctions, DomainSets, GeneralizedGauss
-import GeneralizedGauss: solver_tolerance, canonical_lost_digits, principal_lost_digits, lobatto_lost_digits
+import GeneralizedGauss: solver_tolerance, lost_digits
 
 newton_tol_digits = 30          # Newton residual target: 10^-30
+intermediate_tol_digits = 6    # Optional continuation target: 10^-12
 working_digits = 32             # working precision
 
 setprecision(BigFloat, working_digits; base=10)
 
 # Optional: tighten or loosen the nonlinear solver tolerance explicitly.
 solver_tolerance(::Type{BigFloat}) = BigFloat(10)^(-newton_tol_digits)
-canonical_lost_digits(::Type{BigFloat}) = 2
-principal_lost_digits(::Type{BigFloat}) = 0
-lobatto_lost_digits(::Type{BigFloat}) = 2
+lost_digits(::Type{BigFloat}) = 2
 
 a = BigFloat(0)
 b = BigFloat(1)
@@ -229,7 +228,8 @@ funs = [x -> x^i for i in 0:n-1]
 fun_derivs = vcat(x -> zero(x), [x -> i*x^(i-1) for i in 1:n-1])
 
 basis = quadbasis(funs, fun_derivs, a, b)
-w, x = compute_gauss_rule(basis)
+w, x = compute_gauss_rule(basis;
+    intermediate_tolerance=BigFloat(10)^(-intermediate_tol_digits))
 ```
 
 Practical notes:
@@ -251,14 +251,19 @@ Practical notes:
 
 By default, `GeneralizedGauss` uses `10*eps(BigFloat)` as the nonlinear solver
 tolerance, so overriding `solver_tolerance(::Type{BigFloat})` is optional.
-Intermediate canonical solves use a lost-digits acceptance tolerance of 2
-decimal digits above `ftol`; override it with
-`canonical_lost_digits(::Type{T})` or the `canonical_lost_digits=...` keyword.
-Principal and final Gauss-Lobatto solves use `principal_lost_digits` and
-`lobatto_lost_digits` analogously; principal defaults to 0 digits.
+Canonical, principal, and final Gauss-Lobatto solves use a lost-digits
+acceptance tolerance of 2 decimal digits above `ftol`; override it with
+`lost_digits(::Type{T})` or the `lost_digits=...` keyword.
 For bases returned by `orthogonalize_basis`, the resolved value is enlarged to
 at least `ceil(digits_lost/2)`, where `digits_lost` is the decimal digit-loss
 estimate printed by orthogonalization.
+
+Pass `intermediate_tolerance` to stop canonical and nonterminal principal solves
+at a looser absolute residual tolerance. This can substantially reduce
+continuation cost (i.e. speed up code). The terminal rule is still solved to
+`solver_tolerance(T)`. The option is disabled by default. When it is enabled,
+the checkpoints returned by `compute_gauss_rules` are approximate, which is
+fine for being continuation seeds.
 
 The derivative-free MADS path evaluates basis functions in `BigFloat` and
 returns `BigFloat` weights, nodes, and checkpoints when the basis uses
