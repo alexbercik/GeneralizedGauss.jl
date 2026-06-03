@@ -8,6 +8,7 @@ BasisFunctions = "4343a256-5453-507d-8aad-01a9d7189916"
 DomainSets = "5b8099bc-c8ec-5219-889f-1d9e522a28bf"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 NLsolve = "2774e3e8-f4cf-5e23-947b-6d7e65073b56"
+NOMAD = "02130f1c-4665-5b79-af82-ff1385104aa0"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 
 [compat]
@@ -15,6 +16,7 @@ BasisFunctions = "0.7"
 DomainSets = "0.7"
 LinearAlgebra = "1"
 NLsolve = "4.5.1"
+NOMAD = "2.4.2"
 Random = "1"
 julia = "1.9"
 
