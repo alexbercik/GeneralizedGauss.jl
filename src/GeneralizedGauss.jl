@@ -12,6 +12,7 @@ export quadbasis,
     orthogonalize_basis,
     check_ECT_system,
     check_T_system,
+    check_basis_derivs,
     gauss_legendre,
     legendre_functions,
     legendre_basis

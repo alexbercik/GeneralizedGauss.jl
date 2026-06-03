@@ -25,6 +25,52 @@ bf_tight_tol() = eps(BigFloat)^(BigFloat(2) / 3)
 bf_medium_tol() = eps(BigFloat)^(BigFloat(1) / 2)
 
 # ============================================================================
+# Tests for the user-supplied first derivative checker
+# ============================================================================
+
+@testset "check_basis_derivs: finite-difference derivative diagnostics" begin
+    a, b = -1.0, 1.0
+    funs = [x -> one(x),
+            x -> x,
+            x -> x^2,
+            x -> sin(x)]
+    good_derivs = [x -> zero(x),
+                   x -> one(x),
+                   x -> 2x,
+                   x -> cos(x)]
+    good_basis = quadbasis(funs, good_derivs, a, b)
+
+    @test check_basis_derivs === GeneralizedGauss.check_basis_derivs
+    @test check_basis_derivs(good_basis; num_samples=8,
+                             rng=MersenneTwister(1234), verbose=false)
+    @test check_basis_derivs(good_basis; step_size=1e-5, tol=1e-7,
+                             num_samples=8, rng=MersenneTwister(1234),
+                             verbose=false)
+
+    bad_derivs = [x -> zero(x),
+                  x -> one(x),
+                  x -> 2x + 0.1,
+                  x -> cos(x)]
+    bad_basis = quadbasis(funs, bad_derivs, a, b)
+
+    @test !check_basis_derivs(bad_basis; step_size=1e-5, tol=1e-7,
+                              num_samples=8, rng=MersenneTwister(1234),
+                              verbose=false)
+
+    missing_basis = quadbasis(funs, nothing, a, b)
+    @test !check_basis_derivs(missing_basis; step_size=1e-5, tol=1e-7,
+                              num_samples=2, rng=MersenneTwister(1234),
+                              verbose=false)
+
+    verbose_result = redirect_stdout(devnull) do
+        check_basis_derivs(good_basis; step_size=1e-5, tol=1e-7,
+                           num_samples=2, rng=MersenneTwister(1234),
+                           verbose=true)
+    end
+    @test verbose_result
+end
+
+# ============================================================================
 # Tests for Wronskian computation and ECT-system checks
 # ============================================================================
 

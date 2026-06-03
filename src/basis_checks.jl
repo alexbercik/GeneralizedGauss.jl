@@ -1231,7 +1231,137 @@ end
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# Section 7: Collocation-based T-system diagnostic
+# Section 7: User-supplied derivative diagnostic
+# ────────────────────────────────────────────────────────────────────────────
+
+"""
+    check_basis_derivs(basis; step_size=nothing, tol=nothing, num_samples=10, verbose=true, rng=Random.default_rng())
+
+Check the supplied first derivative for every basis function by comparing it
+against a centered finite-difference approximation at random interior points.
+
+The tolerance is a combined absolute-relative tolerance:
+
+    abs(finite_difference - supplied_derivative) <= tol * max(1, abs(finite_difference), abs(supplied_derivative))
+
+# Arguments
+
+- `basis`: a `Dictionary` (BasisFunctions) or `GenericFunctionSet`.
+- `step_size`: finite-difference spacing.  The default is based on machine
+  precision and capped by the interval width.
+- `tol`: comparison tolerance.  The default is `sqrt(eps(T))`, where `T` is
+  the floating-point type used for the support interval.
+- `num_samples::Int = 10`: random samples per basis function.
+- `verbose::Bool = true`: print a success message on pass and warn on failure.
+- `rng::AbstractRNG = Random.default_rng()`: random number generator.
+
+# Returns
+
+`true` when all sampled derivative values match the finite-difference
+approximation, and `false` otherwise.
+"""
+function check_basis_derivs(basis;
+                            step_size = nothing,
+                            tol = nothing,
+                            num_samples::Int = 10,
+                            verbose::Bool = true,
+                            rng::AbstractRNG = Random.default_rng())
+    num_samples >= 1 ||
+        throw(ArgumentError("num_samples must be positive."))
+
+    endpoint_a = leftendpoint(support(basis))
+    endpoint_b = rightendpoint(support(basis))
+    FT = promote_type(codomaintype(basis), typeof(endpoint_a), typeof(endpoint_b))
+    if !(FT <: AbstractFloat)
+        FT = BigFloat
+    end
+    a = FT(endpoint_a)
+    b = FT(endpoint_b)
+
+    isfinite(a) && isfinite(b) ||
+        throw(ArgumentError("check_basis_derivs requires a finite support interval."))
+
+    width = b - a
+    width > zero(FT) ||
+        throw(ArgumentError("basis support must have positive width."))
+
+    # Keep the random samples far enough from the endpoints that the centered
+    # stencil stays inside the support interval.
+    default_step = min(eps(FT)^(one(FT) / 3) * max(one(FT), width), width / 100)
+    h = step_size === nothing ? default_step : FT(step_size)
+    h > zero(FT) ||
+        throw(ArgumentError("step_size must be positive."))
+    2h < width ||
+        throw(ArgumentError("step_size must be less than half the support width."))
+
+    rel_tol = tol === nothing ? sqrt(eps(FT)) : FT(tol)
+    rel_tol > zero(FT) ||
+        throw(ArgumentError("tol must be positive."))
+
+    n = length(basis)
+    worst_i = 0
+    worst_x = a
+    worst_error = zero(FT)
+    worst_allowed = rel_tol
+    worst_fd = zero(FT)
+    worst_deriv = zero(FT)
+    worst_ratio = -one(FT)
+    all_ok = true
+
+    for i in 1:n
+        for _ in 1:num_samples
+            x = a + h + (width - 2h) * FT(rand(rng))
+            supplied_deriv = maybe_funeval_deriv(basis, i, x, 1)
+
+            if supplied_deriv === nothing
+                if verbose
+                    @warn("Basis derivative check failed: no supplied first " *
+                          "derivative for basis function $i at x = $(_fmt_short(x)).")
+                end
+                return false
+            end
+
+            fd = (funeval(basis, i, x + h) - funeval(basis, i, x - h)) / (2h)
+            err = abs(fd - supplied_deriv)
+            allowed = rel_tol * max(one(FT), abs(fd), abs(supplied_deriv))
+
+            if !isfinite(err) || err > allowed
+                all_ok = false
+                ratio = isfinite(err) ? err / allowed : FT(Inf)
+                if ratio > worst_ratio
+                    worst_i = i
+                    worst_x = x
+                    worst_error = err
+                    worst_allowed = allowed
+                    worst_fd = fd
+                    worst_deriv = supplied_deriv
+                    worst_ratio = ratio
+                end
+            end
+        end
+    end
+
+    if all_ok
+        verbose && println("  Success: supplied basis derivatives match " *
+                           "finite differences for $n basis functions " *
+                           "($num_samples samples each).")
+        return true
+    end
+
+    if verbose
+        @warn("Basis derivative check failed for basis function $worst_i at " *
+              "x = $(_fmt_short(worst_x)): finite difference = " *
+              "$(_fmt_short(worst_fd)), supplied derivative = " *
+              "$(_fmt_short(worst_deriv)), error = $(_fmt_sci(worst_error)), " *
+              "allowed = $(_fmt_sci(worst_allowed)).")
+    end
+
+    false
+end
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Section 8: Collocation-based T-system diagnostic
 # ────────────────────────────────────────────────────────────────────────────
 
 struct ESystemCheckResult{T}
@@ -1581,7 +1711,7 @@ function check_T_system(basis;
 end
 
 # ────────────────────────────────────────────────────────────────────────────
-# Section 8: Formatting helpers
+# Section 9: Formatting helpers
 # ────────────────────────────────────────────────────────────────────────────
 
 _fmt_short(x::BigFloat) = string(Float64(x))
