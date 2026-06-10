@@ -1,9 +1,4 @@
 using GeneralizedGauss
-import GeneralizedGauss: lobatto_lost_digits, principal_lost_digits
-
-# These must be top-level method extensions of the GeneralizedGauss hooks.
-lobatto_lost_digits(::Type{BigFloat}) = 5
-principal_lost_digits(::Type{BigFloat}) = 5
 
 setprecision(BigFloat, 20; base=10) do
     p = 2
@@ -18,6 +13,8 @@ setprecision(BigFloat, 20; base=10) do
     qderivs = vcat(qderivs_poly, qderivs_exp, qderivs_exp2)
     quad_basis = quadbasis(qfuncs, qderivs, BigFloat(-1), BigFloat(1))
     quad_basis, _ = orthogonalize_basis(quad_basis)
-    # The late principal and final Lobatto solves are ill-conditioned; see the top-level overrides.
-    quad = compute_gauss_rule(quad_basis; principal=:upper, verbose=true)
+    # The late principal and final Lobatto solves are ill-conditioned, so this
+    # driver allows a small per-call lost-digits acceptance window.
+    quad = compute_gauss_rule(quad_basis;
+        principal=:upper, verbose=true, lost_digits=5)
 end

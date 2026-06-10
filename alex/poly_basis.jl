@@ -56,9 +56,6 @@ test_quadrature = false
 # Set BigFloat precision and solver tolerance
 # ============================================================================
 
-# Import the solver tolerance so we can override it for BigFloat
-import GeneralizedGauss: solver_tolerance
-
 # Total decimal digits and corresponding BigFloat precision in bits.
 total_digits = newton_tol_digits + extra_digits
 bigfloat_precision_bits = ceil(Int, total_digits * log2(big(10)))
@@ -68,8 +65,8 @@ bigfloat_precision_bits = ceil(Int, total_digits * log2(big(10)))
 # precision (and cost) to match the requested accuracy.
 setprecision(BigFloat, bigfloat_precision_bits)
 
-# Override the default Newton solver tolerance for BigFloat.
-solver_tolerance(::Type{BigFloat}) = BigFloat(10)^(-newton_tol_digits)
+# Per-call Newton solver tolerance for BigFloat.
+newton_tolerance = BigFloat(10)^(-newton_tol_digits)
 
 # Use BigFloat for higher precision (recommended for better accuracy)
 # Convert a and b to BigFloat to maintain precision
@@ -283,9 +280,14 @@ end
 
 basis = quadbasis(basis_funs, basis_derivs, a_big, b_big)
 if get_checkpoints
-    w, x, xi_checkpoints, w_checkpoints, x_checkpoints = compute_gauss_rules(basis, moments, verbose=verbose, add_endpoint=add_endpoint, principal=principal)
+    w, x, xi_checkpoints, w_checkpoints, x_checkpoints =
+        compute_gauss_rules(basis, moments;
+            verbose, add_endpoint, principal,
+            solver_tolerance=newton_tolerance)
 else
-    w, x = compute_gauss_rule(basis, moments, verbose=verbose, add_endpoint=add_endpoint, principal=principal)
+    w, x = compute_gauss_rule(basis, moments;
+        verbose, add_endpoint, principal,
+        solver_tolerance=newton_tolerance)
 end
 println("\nFinal Gauss quadrature rule (nodes and weights):")
 println("x: ", x)

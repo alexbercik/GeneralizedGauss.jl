@@ -35,9 +35,6 @@ get_principal_representations = false
 # Set BigFloat precision and solver tolerance
 # ============================================================================
 
-# Import the solver tolerance so we can override it for BigFloat
-import GeneralizedGauss: solver_tolerance
-
 # Total decimal digits and corresponding BigFloat precision in bits.
 total_digits = newton_tol_digits + extra_digits
 bigfloat_precision_bits = ceil(Int, total_digits * log2(big(10)))
@@ -47,8 +44,8 @@ bigfloat_precision_bits = ceil(Int, total_digits * log2(big(10)))
 # precision (and cost) to match the requested accuracy.
 setprecision(BigFloat, bigfloat_precision_bits)
 
-# Override the default Newton solver tolerance for BigFloat.
-solver_tolerance(::Type{BigFloat}) = BigFloat(10.0)^(-newton_tol_digits)
+# Override the Newton solver tolerance for BigFloat.
+newton_tolerance = BigFloat(10)^(-newton_tol_digits)
 
 # ============================================================================
 # Helper function: Numerical derivative using finite differences
@@ -307,9 +304,10 @@ end
 #check_T_system(basis)
 #check_ECT_system(basis)
 if get_principal_representations
-    w, x, xi_checkpoints, w_checkpoints, x_checkpoints = compute_gauss_rules(basis)
+    w, x, xi_checkpoints, w_checkpoints, x_checkpoints =
+        compute_gauss_rules(basis; solver_tolerance=newton_tolerance)
 else
-    w, x = compute_gauss_rule(basis)
+    w, x = compute_gauss_rule(basis; solver_tolerance=newton_tolerance)
 end
 println("\nFinal Gauss quadrature rule (nodes and weights):")
 println("x: ", x)

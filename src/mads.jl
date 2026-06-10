@@ -127,10 +127,6 @@ function _mads_variable_bounds(rule, bracket)
     lower, upper
 end
 
-_mads_solver_tolerance(::Type{T}) where {T} =
-    first(_resolve_solver_tolerances(T;
-        tolerance_floor=T(10) * T(eps(Float64))))
-
 const _MADS_LOCAL_MIN_MESH_SIZE = 1e-3
 
 function _mads_trial_outputs!(outputs, rule, node_variables_float,
@@ -175,13 +171,14 @@ end
 function _solve_system_mads(rule, w0, x0; dx=nothing, bracket=nothing,
         verbose=false, max_bb_eval::Int=5000,
         min_mesh_size::Float64=_MADS_LOCAL_MIN_MESH_SIZE,
+        solver_tolerance=nothing,
         intermediate_tolerance=nothing)
     0 < min_mesh_size < 1 ||
         error("MADS local minimum mesh size must be between zero and one.")
     T = promote_type(eltype(w0), eltype(x0))
     x_init = quad_to_newton(rule, w0, x0)
     strict_tolerance, active_tolerance =
-        _resolve_solver_tolerances(T, intermediate_tolerance;
+        _resolve_solver_tolerances(T, solver_tolerance, intermediate_tolerance;
             tolerance_floor=T(10) * T(eps(Float64)))
     w_init, x_quad_init = newton_to_quad(rule, x_init)
     support_bounds = _mads_support_bounds(rule)

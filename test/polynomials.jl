@@ -50,6 +50,8 @@ end
     for bad_tolerance in (0.0, -1e-3, Inf, NaN)
         @test_throws ArgumentError compute_gauss_rule(
             scalar_basis, [2.0, 0.0]; intermediate_tolerance=bad_tolerance)
+        @test_throws ArgumentError compute_gauss_rule(
+            scalar_basis, [2.0, 0.0]; solver_tolerance=bad_tolerance)
     end
 
     # Relaxed intermediate tolerances may loosen checkpoints, but the returned
@@ -58,12 +60,12 @@ end
     w_lg, x_lg = compute_gauss_rule(basis6, moments6;
         principal=:lower, intermediate_tolerance=1e-6)
     @test basis_residual_norm(basis6, moments6, w_lg, x_lg) <=
-          GeneralizedGauss.solver_tolerance(Float64)
+          10 * eps(Float64)
 
     w_lgl, x_lgl = compute_gauss_rule(basis6, moments6;
         principal=:upper, intermediate_tolerance=1e-6)
     @test basis_residual_norm(basis6, moments6, w_lgl, x_lgl) <=
-          GeneralizedGauss.solver_tolerance(Float64)
+          10 * eps(Float64)
 end
 
 @testset "Extended continuation API regressions" begin

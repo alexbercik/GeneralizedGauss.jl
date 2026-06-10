@@ -9,7 +9,7 @@ isdefined(@__MODULE__, :assert_rule_matches) || include("test_helpers.jl")
 
 # Extended BigFloat checks.  The fast suite owns the 30-digit default
 # requirement; this opt-in suite checks a few higher-precision pipelines without
-# overriding solver_tolerance or printing long diagnostic tables.
+# passing custom solver tolerances or printing long diagnostic tables.
 
 function reference_gl_mapped(n::Int, a::T, b::T) where {T}
     x_ref, w_ref = gauss_legendre(n, T)
