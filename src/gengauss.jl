@@ -222,10 +222,10 @@ orthogonalization_digits_lost(::Dictionary) = 0.0
 orthogonalization_digits_lost(dict::GenericFunctionSet) =
     dict.orthogonalization_digits_lost
 
-function _orthogonalization_lost_digits_floor(dict::Dictionary)
+function _orthogonalization_lost_digits(dict::Dictionary)
     lost = orthogonalization_digits_lost(dict)
     isfinite(lost) || return 0
-    ceil(Int, max(0.0, lost/2))
+    ceil(Int, max(0.0, lost))
 end
 
 function _lost_digits_acceptance_limit(diag, lost_digits)
@@ -496,7 +496,7 @@ function estimate_upper_canonical_representation(dict, moments, a, b, w0, x0;
 
     verbose && println("Estimating upper canonical representation, xi between $(a) and $(b)")
 
-    digits = max(lost_digits, _orthogonalization_lost_digits_floor(dict))
+    digits = max(lost_digits, _orthogonalization_lost_digits(dict))
 
     seed = _estimate_canonical_representation_by_sweep(
         compute_upper_canonical_representation, "Upper canonical",
@@ -971,7 +971,7 @@ function estimate_lower_canonical_representation(dict, moments, a, b, w0, x0;
 
     verbose && println("Estimating lower canonical representation, xi between $(a) and $(b)")
 
-    digits = max(lost_digits, _orthogonalization_lost_digits_floor(dict))
+    digits = max(lost_digits, _orthogonalization_lost_digits(dict))
 
     seed = _estimate_canonical_representation_by_sweep(
         compute_lower_canonical_representation, "Lower canonical",
@@ -1072,7 +1072,7 @@ function estimate_canonical_both_ends(dict, moments, ξ_lo, ξ_hi, w0, x0;
         position_of_xi::Int=2, sweep_dir::Symbol=:left_to_right,
         max_adaptive_steps::Int=32, lost_digits::Real=DEFAULT_LOST_DIGITS,
         verbose=false, options...)
-    digits = max(lost_digits, _orthogonalization_lost_digits_floor(dict))
+    digits = max(lost_digits, _orthogonalization_lost_digits(dict))
 
     compute_one_both_ends = _canonical_both_ends_solver(position_of_xi)
 
@@ -1126,7 +1126,7 @@ function compute_lobatto_step(dict, moments, radau_w, radau_x,
     T = eltype(radau_w)
     a_pt = T(supportleft(dict))
     b_pt = T(supportright(dict))
-    digits = max(lost_digits, _orthogonalization_lost_digits_floor(dict))
+    digits = max(lost_digits, _orthogonalization_lost_digits(dict))
 
     if config.add_endpoint == :right
         # Seed: prepend a (weight 0) to right-Radau (UP of c^{n_dict-1}).
@@ -1272,7 +1272,7 @@ Keyword arguments:
   `min(solver_tolerance, active_tolerance) * 10^lost_digits`, so continuation
   never accepts residuals above the strict slack band when intermediate solves
   use a looser target. The default is 2, increased if needed to
-  `ceil(orthogonalization_digits_lost/2)` for bases returned by
+  `ceil(orthogonalization_digits_lost)` for bases returned by
   `orthogonalize_basis`. Pass `lost_digits=...` to override it for one call.
 - `solver_tolerance`: optional positive absolute residual tolerance for the
   nonlinear solves. Default `nothing` uses `10*eps(T)`, where `T` is the
@@ -1332,7 +1332,7 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
     config = GaussRuleConfig(; principal, add_endpoint=add_endpoint_resolved)
     steps = default_representation_steps(config.principal, config.add_endpoint, iseven(n))
     lost_digits_resolved =
-        max(lost_digits, _orthogonalization_lost_digits_floor(dict))
+        max(lost_digits, _orthogonalization_lost_digits(dict))
 
     policy_type = promote_type(codomaintype(dict), eltype(moments))
     # Validate the public override once, including short paths that do not need
