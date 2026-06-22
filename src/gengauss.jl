@@ -78,6 +78,16 @@ function _resolve_solver_tolerance(::Type{T}, solver_tolerance;
     strict_tolerance
 end
 
+const DEFAULT_INTERMEDIATE_MIN_TOLERANCE = 1e-8
+const DEFAULT_INTERMEDIATE_MAX_TOLERANCE = 1e-3
+
+function _default_intermediate_tolerance(::Type{T}, strict_tolerance::T) where {T}
+    sqrt_term = T(10) * sqrt(strict_tolerance)
+    absolute_floor = T(DEFAULT_INTERMEDIATE_MIN_TOLERANCE)
+    hybrid = max(sqrt_term, absolute_floor)
+    min(hybrid, T(DEFAULT_INTERMEDIATE_MAX_TOLERANCE))
+end
+
 # Intermediate continuation solves only need to provide useful seeds and
 # brackets. Keep the strict tolerance separately so diagnostics and lost-digit
 # fallback policies remain tied to the accuracy requested for final rules.
@@ -86,8 +96,16 @@ function _resolve_solver_tolerances(::Type{T}, solver_tolerance=nothing,
         tolerance_floor=zero(T)) where {T}
     strict_tolerance = _resolve_solver_tolerance(T, solver_tolerance;
         tolerance_floor)
-    if intermediate_tolerance === nothing
+    if intermediate_tolerance === :strict
         return strict_tolerance, strict_tolerance
+    elseif intermediate_tolerance === nothing
+        default_intermediate =
+            _default_intermediate_tolerance(T, strict_tolerance)
+        active_tolerance = max(strict_tolerance, default_intermediate)
+        return strict_tolerance, active_tolerance
+    elseif intermediate_tolerance isa Symbol
+        throw(ArgumentError("intermediate_tolerance must be a positive number, " *
+            "`:strict`, or `nothing`; got $(intermediate_tolerance)"))
     end
 
     isfinite(intermediate_tolerance) && intermediate_tolerance > 0 ||
@@ -96,6 +114,39 @@ function _resolve_solver_tolerances(::Type{T}, solver_tolerance=nothing,
     isfinite(active_tolerance) ||
         throw(ArgumentError("intermediate_tolerance must be representable as a finite value in $(T)"))
     strict_tolerance, active_tolerance
+end
+
+function _continuation_solver_policy_type(;
+        solver_tolerance=nothing, intermediate_tolerance=nothing)
+    if solver_tolerance !== nothing
+        return typeof(solver_tolerance)
+    elseif intermediate_tolerance isa Real
+        return typeof(intermediate_tolerance)
+    else
+        return Float64
+    end
+end
+
+function _continuation_solver_hint(;
+        solver_tolerance=nothing,
+        intermediate_tolerance=nothing,
+        policy_type::Type=Float64)
+    intermediate_tolerance === :strict && return ""
+    strict, active = _resolve_solver_tolerances(policy_type,
+        solver_tolerance, intermediate_tolerance)
+    active <= strict && return ""
+    " If continuation used a coarse intermediate tolerance, try lowering " *
+    "intermediate_tolerance or pass intermediate_tolerance=:strict " *
+    "(active=$(_fmt_sci(active)), strict=$(_fmt_sci(strict)))."
+end
+
+function _continuation_solver_hint(options)
+    solver_tolerance = get(options, :solver_tolerance, nothing)
+    intermediate_tolerance = get(options, :intermediate_tolerance, nothing)
+    policy_type = _continuation_solver_policy_type(;
+        solver_tolerance, intermediate_tolerance)
+    _continuation_solver_hint(;
+        solver_tolerance, intermediate_tolerance, policy_type)
 end
 
 # Default extra decimal digits accepted above the nonlinear solver tolerance.
@@ -177,13 +228,27 @@ function _orthogonalization_lost_digits_floor(dict::Dictionary)
     ceil(Int, max(0.0, lost/2))
 end
 
+function _lost_digits_acceptance_limit(diag, lost_digits)
+    lost_digits < 0 && throw(ArgumentError("lost_digits must be nonnegative"))
+    residual = diag.residual_norm
+    strict = diag.tolerance
+    active = (:active_tolerance in propertynames(diag) &&
+        diag.active_tolerance !== nothing) ?
+        diag.active_tolerance : strict
+    T = typeof(residual)
+    # Lost digits relax only the strict target. When continuation uses a looser
+    # active tolerance, do not accept residuals above min(active, strict)*10^LD;
+    # with active >= strict this reduces to the strict slack band.
+    min(T(strict), T(active)) * T(10)^T(lost_digits)
+end
+
 function _lost_digits_accepts(diag, lost_digits)
     diag === nothing && return false
     :error in keys(diag) && return false
     lost_digits < 0 && return false
-    ratio = diag.ratio
-    isfinite(ratio) || return false
-    ratio <= typeof(ratio)(10)^typeof(ratio)(lost_digits)
+    residual = diag.residual_norm
+    isfinite(residual) || return false
+    residual <= _lost_digits_acceptance_limit(diag, lost_digits)
 end
 
 function _warn_lost_digits_acceptance(label, location, diag, lost_digits,
@@ -195,7 +260,9 @@ function _warn_lost_digits_acceptance(label, location, diag, lost_digits,
 end
 
 function _require_principal_convergence(label, location, converged, diag,
-        lost_digits; verbose=false)
+        lost_digits; verbose=false,
+        solver_tolerance=nothing, intermediate_tolerance=nothing,
+        policy_type::Type=Float64)
     converged && return true
     if _lost_digits_accepts(diag, lost_digits)
         verbose && _warn_lost_digits_acceptance(label, location, diag,
@@ -207,7 +274,10 @@ function _require_principal_convergence(label, location, converged, diag,
     println("ERROR: $(label) nonlinear solve$(where) failed " *
             "[$(_format_solver_diagnostic(diag)), " *
             "lost_digits=$(lost_digits)]; stopping.")
-    error("$(label) nonlinear solve failed. Consider increasing lost_digits if residual is still acceptable.")
+    hint = _continuation_solver_hint(;
+        solver_tolerance, intermediate_tolerance, policy_type)
+    error("$(label) nonlinear solve failed. Consider increasing lost_digits if " *
+          "residual is still acceptable." * hint)
 end
 
 function _has_first_derivatives(dict::Dictionary)
@@ -230,7 +300,8 @@ end
 function solve_system(rule, w0, x0; verbose=false,
         solver_mode::Symbol=:analytic_nlsolve, mads_dx=nothing,
         mads_bracket=nothing, solver_tolerance=nothing,
-        intermediate_tolerance=nothing, options...)
+        intermediate_tolerance=nothing,
+        lost_digits::Real=DEFAULT_LOST_DIGITS, options...)
     x_init = quad_to_newton(rule, w0, x0)
     F!(Fx, x) = residual!(Fx, rule, x)
 
@@ -308,7 +379,9 @@ function compute_one_point_rule(dict, moments; verbose=false,
         diag = (; residual_norm=abs(fx), tolerance=strict_f_tol,
                 active_tolerance=active_f_tol, ratio=abs(fx) / strict_f_tol)
         _require_principal_convergence("one-point scalar", x,
-            false, diag, lost_digits; verbose)
+            false, diag, lost_digits; verbose,
+            solver_tolerance, intermediate_tolerance,
+            policy_type=typeof(x0))
     end
 
     f1x = funeval(dict, 1, x)
@@ -431,10 +504,11 @@ function estimate_upper_canonical_representation(dict, moments, a, b, w0, x0;
         verbose, config, sweep_direction, max_adaptive_steps,
         lost_digits=digits, options...)
     if seed === nothing
+        hint = _continuation_solver_hint(options)
         error("Upper canonical sweep failed to locate a next-moment " *
               "sign change within the adaptive sweep budget. Check the basis " *
               "or increase max_adaptive_steps/lost_digits if the " *
-              "nonlinear residuals are acceptable.")
+              "nonlinear residuals are acceptable." * hint)
     end
     seed
 end
@@ -459,15 +533,17 @@ struct CanonicalBracketState{TXI,TF,TW,TX}
 end
 
 function CanonicalBracketState(left::CanonicalSample{TXI,TF,TW,TX},
-        right::CanonicalSample{TXI,TF,TW,TX}) where {TXI,TF,TW,TX}
+        right::CanonicalSample{TXI,TF,TW,TX};
+        continuation_hint="") where {TXI,TF,TW,TX}
     # The canonical representation fixes one node exactly at xi. Infer its
     # index from the realized rules so branch-specific index formulas cannot
     # disagree with the representation sent to the nonlinear solver.
-    left_xi_index = _canonical_xi_index(left)
-    right_xi_index = _canonical_xi_index(right)
+    left_xi_index = _canonical_xi_index(left; continuation_hint)
+    right_xi_index = _canonical_xi_index(right; continuation_hint)
     left_xi_index == right_xi_index ||
         _canonical_refinement_error("canonical bracket changed the fixed xi " *
-            "node index from $(left_xi_index) to $(right_xi_index).")
+            "node index from $(left_xi_index) to $(right_xi_index).";
+            continuation_hint)
     best = abs(left.F) <= abs(right.F) ? left : right
     CanonicalBracketState{TXI,TF,TW,TX}(
         left, right, best, right.xi - left.xi, left_xi_index)
@@ -479,16 +555,17 @@ function _canonical_sample(xi, w, x, dict, moments)
         w, x)
 end
 
-function _canonical_xi_index(sample::CanonicalSample)
+function _canonical_xi_index(sample::CanonicalSample; continuation_hint="")
     matches = findall(==(sample.xi), sample.x)
     length(matches) == 1 ||
         _canonical_refinement_error("expected exactly one node fixed at " *
-            "xi=$(sample.xi), found $(length(matches)).")
+            "xi=$(sample.xi), found $(length(matches)).";
+            continuation_hint)
     only(matches)
 end
 
 function _canonical_bracket_state(first::CanonicalSample,
-        second::CanonicalSample)
+        second::CanonicalSample; continuation_hint="")
     iszero(first.F) && return CanonicalBracketState(first, first)
     iszero(second.F) && return CanonicalBracketState(second, second)
 
@@ -497,23 +574,28 @@ function _canonical_bracket_state(first::CanonicalSample,
     if left.xi == right.xi
         iszero(left.F) && iszero(right.F) ||
             _canonical_refinement_error("canonical bracket has zero width " *
-                "without a zero residual.")
+                "without a zero residual.";
+                continuation_hint)
     elseif same_sign(left.F, right.F)
         _canonical_refinement_error("canonical bracket endpoints do not " *
-            "have opposite residual signs.")
+            "have opposite residual signs.";
+            continuation_hint)
     end
-    CanonicalBracketState(left, right)
+    CanonicalBracketState(left, right; continuation_hint)
 end
 
-function _canonical_refinement_error(detail)
+function _canonical_refinement_error(detail; continuation_hint="")
     error("Canonical bracket refinement failed: $(detail) This may indicate " *
-          "conditioning problems or a basis that is not a CT-system.")
+          "conditioning problems or a basis that is not a CT-system." *
+          continuation_hint)
 end
 
-function _canonical_secant_target(state::CanonicalBracketState)
+function _canonical_secant_target(state::CanonicalBracketState;
+        continuation_hint="")
     left, right = state.left, state.right
     state.width > zero(state.width) ||
-        _canonical_refinement_error("cannot refine a zero-width bracket.")
+        _canonical_refinement_error("cannot refine a zero-width bracket.";
+            continuation_hint)
 
     midpoint = left.xi + state.width / 2
     ΔF = right.F - left.F
@@ -526,13 +608,15 @@ function _canonical_secant_target(state::CanonicalBracketState)
 
     if !(left.xi < target < right.xi) || _canonical_x_stalled(left.xi, target)
         _canonical_refinement_error("secant interpolation and midpoint " *
-            "fallback stalled inside bracket [$(left.xi), $(right.xi)].")
+            "fallback stalled inside bracket [$(left.xi), $(right.xi)].";
+            continuation_hint)
     end
     target
 end
 
 function _update_canonical_bracket_after_refinement(
-        state::CanonicalBracketState, refined::CanonicalSample)
+        state::CanonicalBracketState, refined::CanonicalSample;
+        continuation_hint="")
     left, right = state.left, state.right
     old_width = state.width
     old_best = abs(state.best.F)
@@ -543,7 +627,8 @@ function _update_canonical_bracket_after_refinement(
     residual_lo - slack <= refined.F <= residual_hi + slack ||
         _canonical_refinement_error("refined next-moment residual " *
             "$(refined.F) is inconsistent with the monotonic bracket " *
-            "residuals [$(left.F), $(right.F)].")
+            "residuals [$(left.F), $(right.F)].";
+            continuation_hint)
 
     updated = if iszero(refined.F)
         CanonicalBracketState(refined, refined)
@@ -553,18 +638,21 @@ function _update_canonical_bracket_after_refinement(
         CanonicalBracketState(left, refined)
     else
         _canonical_refinement_error("refined residual sign is inconsistent " *
-            "with the saved sign-changing bracket.")
+            "with the saved sign-changing bracket.";
+            continuation_hint)
     end
 
     new_width = updated.width
     new_width < old_width ||
         _canonical_refinement_error("updated bracket width did not shrink " *
-            "from $(old_width) to $(new_width).")
+            "from $(old_width) to $(new_width).";
+            continuation_hint)
 
     new_best = abs(updated.best.F)
     new_best <= old_best + slack ||
         _canonical_refinement_error("best absolute residual worsened from " *
-            "$(old_best) to $(new_best).")
+            "$(old_best) to $(new_best).";
+            continuation_hint)
     updated
 end
 
@@ -573,7 +661,8 @@ function _refine_canonical_bracket(compute_one, label, dict, moments,
         verbose=false, config::GaussRuleConfig=GaussRuleConfig(),
         max_adaptive_steps::Int=32, lost_digits::Real=DEFAULT_LOST_DIGITS,
         options...)
-    target = _canonical_secant_target(state)
+    continuation_hint = _continuation_solver_hint(options)
+    target = _canonical_secant_target(state; continuation_hint)
     warm_seed = abs(target - state.left.xi) <= abs(state.right.xi - target) ?
         state.left : state.right
     accepted, xi, w, x, _ =
@@ -584,7 +673,8 @@ function _refine_canonical_bracket(compute_one, label, dict, moments,
     accepted || return nothing
 
     refined = _canonical_sample(xi, w, x, dict, moments)
-    _update_canonical_bracket_after_refinement(state, refined)
+    _update_canonical_bracket_after_refinement(state, refined;
+        continuation_hint)
 end
 
 function _accept_canonical_step(compute_one, label, dict, moments, xi, w_seed, x_seed;
@@ -663,18 +753,18 @@ function _canonical_step_target(xi, sweep_end, dx, direction::Symbol)
 end
 
 function _update_canonical_trend(label, direction, xi_prev, xi_curr,
-        F_prev, F_curr, trend)
+        F_prev, F_curr, trend; continuation_hint="")
     if F_curr == F_prev
         error("$(label): next-moment residual stopped changing during " *
               "$(direction) sweep at ξ=$(xi_curr). F_prev=$(F_prev), " *
-              "F_curr=$(F_curr).")
+              "F_curr=$(F_curr)." * continuation_hint)
     end
 
     step_trend = F_curr > F_prev ? :increasing : :decreasing
     if trend !== nothing && step_trend != trend
         error("$(label): next-moment residual is not monotonic during " *
               "$(direction) sweep between ξ=$(xi_prev) and ξ=$(xi_curr). " *
-              "F_prev=$(F_prev), F_curr=$(F_curr).")
+              "F_prev=$(F_prev), F_curr=$(F_curr)." * continuation_hint)
     end
 
     step_trend
@@ -715,6 +805,7 @@ function _estimate_canonical_representation_by_sweep(compute_one, label,
 
     trend = nothing
     samples = 0
+    continuation_hint = _continuation_solver_hint(options)
     while true
         target = _canonical_step_target(xi_prev, sweep_end, dx, dir)
         if _canonical_x_stalled(xi_prev, target)
@@ -733,10 +824,11 @@ function _estimate_canonical_representation_by_sweep(compute_one, label,
 
         F_curr = eval_moment_error(w_curr, x_curr, dict[end], moments[end])
         trend = _update_canonical_trend(label, dir, xi_prev, xi_curr,
-            F_prev, F_curr, trend)
+            F_prev, F_curr, trend; continuation_hint)
         current = CanonicalSample(xi_curr, F_curr, w_curr, x_curr)
         if !same_sign(F_prev, F_curr)
-            return _canonical_bracket_state(previous, current)
+            return _canonical_bracket_state(previous, current;
+                continuation_hint)
         end
 
         #-- If it required refinement, update the step size
@@ -887,10 +979,11 @@ function estimate_lower_canonical_representation(dict, moments, a, b, w0, x0;
         verbose, config, sweep_direction, max_adaptive_steps,
         lost_digits=digits, options...)
     if seed === nothing
+        hint = _continuation_solver_hint(options)
         error("Lower canonical sweep failed to locate a next-moment " *
               "sign change within the adaptive sweep budget. Check the basis " *
               "or increase max_adaptive_steps/lost_digits if the " *
-              "nonlinear residuals are acceptable.")
+              "nonlinear residuals are acceptable." * hint)
     end
     seed
 end
@@ -1024,6 +1117,7 @@ warning when `verbose=true`.
 function compute_lobatto_step(dict, moments, radau_w, radau_x,
         config::GaussRuleConfig; verbose=false, max_adaptive_steps::Int=32,
         lost_digits::Real=DEFAULT_LOST_DIGITS,
+        solver_tolerance=nothing,
         intermediate_tolerance=nothing, options...)
     n_dict = length(dict)
     @assert iseven(n_dict) "Gauss-Lobatto requires even basis length"
@@ -1079,7 +1173,10 @@ function compute_lobatto_step(dict, moments, radau_w, radau_x,
         seed = state.best
         try
             solve_system(rule, seed.w, seed.x;
-                verbose, mads_bracket=state, options...)
+                verbose, mads_bracket=state,
+                solver_tolerance,
+                intermediate_tolerance=:strict,
+                lost_digits=digits, options...)
         catch e
             if e isa InterruptException
                 rethrow()
@@ -1170,8 +1267,11 @@ Keyword arguments:
 - `max_adaptive_steps`: maximum midpoint retries per canonical continuation
   target when a nonlinear solve fails from the previous converged point.
 - `lost_digits`: extra decimal digits by which canonical, principal, and final
-  Gauss-Lobatto nonlinear residuals may miss `ftol` and still be accepted with
-  a warning when `verbose=true`. The default is 2, increased if needed to
+  Gauss-Lobatto nonlinear residuals may miss `solver_tolerance` and still be
+  accepted with a warning when `verbose=true`. The acceptance band is
+  `min(solver_tolerance, active_tolerance) * 10^lost_digits`, so continuation
+  never accepts residuals above the strict slack band when intermediate solves
+  use a looser target. The default is 2, increased if needed to
   `ceil(orthogonalization_digits_lost/2)` for bases returned by
   `orthogonalize_basis`. Pass `lost_digits=...` to override it for one call.
 - `solver_tolerance`: optional positive absolute residual tolerance for the
@@ -1180,7 +1280,10 @@ Keyword arguments:
 - `intermediate_tolerance`: optional positive absolute residual tolerance for
   canonical and nonterminal principal solves. The final returned rule is still
   polished with `solver_tolerance`. Checkpoints may be approximate when this is
-  set. Default `nothing` preserves strict solves throughout.
+  set. Default `nothing` uses a hybrid continuation tolerance:
+  `min(max(10*sqrt(solver_tolerance), 1e-8), 1e-2)`.
+  Pass `:strict` to disable the default hybrid and keep intermediate solves at
+  `solver_tolerance`. An explicit positive value overrides the default directly.
 - `differentiable`: when `true`, use Newton solves with analytic derivatives
   where available and centered finite differences for missing derivatives.
   Released support-boundary seeds use a second-order one-sided stencil until
@@ -1195,7 +1298,7 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
         max_adaptive_steps::Int = 32,
         lost_digits::Real = DEFAULT_LOST_DIGITS,
         solver_tolerance::Union{Nothing,Real} = nothing,
-        intermediate_tolerance::Union{Nothing,Real} = nothing,
+        intermediate_tolerance::Union{Nothing,Real,Symbol} = nothing,
         differentiable::Bool = true,
         options...)
 
@@ -1226,16 +1329,16 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
         moments = compute_moments(dict; measure=measure)
     end
 
+    config = GaussRuleConfig(; principal, add_endpoint=add_endpoint_resolved)
+    steps = default_representation_steps(config.principal, config.add_endpoint, iseven(n))
+    lost_digits_resolved =
+        max(lost_digits, _orthogonalization_lost_digits_floor(dict))
+
     policy_type = promote_type(codomaintype(dict), eltype(moments))
     # Validate the public override once, including short paths that do not need
     # an intermediate solve. Individual solver calls resolve their working type.
     _resolve_solver_tolerances(policy_type, solver_tolerance,
         intermediate_tolerance)
-
-    config = GaussRuleConfig(; principal, add_endpoint=add_endpoint_resolved)
-    steps = default_representation_steps(config.principal, config.add_endpoint, iseven(n))
-    lost_digits_resolved =
-        max(lost_digits, _orthogonalization_lost_digits_floor(dict))
 
     l = n >> 1 # equivalent to l = n / 2 integer division
     T = codomaintype(dict)
@@ -1282,7 +1385,8 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
         verbose, config, lost_digits=lost_digits_resolved,
         differentiable,
         solver_tolerance,
-        intermediate_tolerance=n == 2 ? nothing : intermediate_tolerance,
+        intermediate_tolerance=n == 2 ?
+            :strict : intermediate_tolerance,
         options...)
     verbose && println("One point quadrature rule is: ", x, ", ", w)
 
@@ -1362,7 +1466,8 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
                 terminal_main_solve = tot_moments == n &&
                     !(config.principal == :upper && iseven(n))
                 principal_intermediate_tolerance =
-                    terminal_main_solve ? nothing : intermediate_tolerance
+                    terminal_main_solve ?
+                    :strict : intermediate_tolerance
                 solve_principal = function (state)
                     seed = state.best
                     compute_upper_principal_representation(
@@ -1393,7 +1498,10 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
                 _require_principal_convergence(
                     principal_label,
                     xi, converged, principal_diag, lost_digits_resolved;
-                    verbose)
+                    verbose,
+                    solver_tolerance,
+                    intermediate_tolerance=principal_intermediate_tolerance,
+                    policy_type=T)
                 verbose && println("Upper principal representation ", upper_principal_index, " : xi is ", xi)
                 verbose && println("    x: ", x)
                 # Track Step 2 anchored-Radau rule (only set when step.k == 1, i.e.
@@ -1436,7 +1544,8 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
                 terminal_main_solve = tot_moments == n &&
                     !(config.principal == :upper && iseven(n))
                 principal_intermediate_tolerance =
-                    terminal_main_solve ? nothing : intermediate_tolerance
+                    terminal_main_solve ?
+                    :strict : intermediate_tolerance
                 solve_principal = function (state)
                     seed = state.best
                     compute_lower_principal_representation(
@@ -1467,7 +1576,10 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
                 _require_principal_convergence(
                     principal_label,
                     xi, converged, principal_diag, lost_digits_resolved;
-                    verbose)
+                    verbose,
+                    solver_tolerance,
+                    intermediate_tolerance=principal_intermediate_tolerance,
+                    policy_type=T)
                 verbose && println("Lower principal representation ", lower_principal_index, " : xi is ", xi)
                 verbose && println("    x: ", x)
                 # Add to unified checkpoints (always add, not conditional on has_lower)
@@ -1552,11 +1664,15 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
                 "" :
                 " Current effective lost_digits=$(lost_digits_resolved). " *
                 "Increase lost_digits above this value to accept the final residual if the lost digits are acceptable."
+            intermediate_hint = _continuation_solver_hint(;
+                solver_tolerance, intermediate_tolerance,
+                policy_type=T)
             error(
                 "compute_gauss_rules: Gauss-Lobatto post-loop failed " *
                 "(n=$(n), add_endpoint=$(config.add_endpoint)): " *
                 lobatto_diag_str *
                 lost_digits_hint *
+                intermediate_hint *
                 (verbose ? "" : " Re-run with verbose=true for continuation/sweep details.")
             )
         end

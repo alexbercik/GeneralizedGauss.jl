@@ -30,7 +30,8 @@ import GeneralizedGauss: gauss_legendre
     reference_x = (reference_x .+ 1) ./ 2
     reference_w ./= 2
 
-    raw_w, raw_x = compute_gauss_rule(basis, moments)
+    raw_w, raw_x = compute_gauss_rule(basis, moments;
+        intermediate_tolerance=:strict)
 
     # Orthogonalization warns because the change-of-basis matrix itself is
     # extremely ill-conditioned. For this scaled basis, it still removes the
