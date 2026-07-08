@@ -1013,7 +1013,7 @@ Numerically verify whether `basis` forms an Extended Complete Chebyshev
 (ECT) system on its support interval `(a, b)` by evaluating all
 initial-segment Wronskians.
 
-By the Wronskian criterion (Theorem 2, existence.pdf), the basis is a
+By the Wronskian criterion for ECT systems, the basis is a
 positive ECT-system if and only if
 
     W(f_1, …, f_k)(x) > 0   for all x ∈ (a, b),   k = 1, …, n.

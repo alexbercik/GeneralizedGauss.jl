@@ -84,8 +84,6 @@ end
 
 # Evaluate the residual of the system of equations
 function residual!(result, sys::QuadRuleSystem, newton_x)
-    # w,x = newton_to_quad(sys, newton_x)
-    # residual!(result, sys, w, x, basis(sys), moments(sys))
     L = quadlength(sys)
     w,x = sys.scratch_w[L], sys.scratch_x[L]
     newton_to_quad!(sys, w, x, newton_x)
@@ -114,8 +112,6 @@ function jacobian!(J, sys::QuadRuleSystem, newton_x)
 end
 
 function jacobian!(J, sys::QuadRuleSystem, newton_x, eval_deriv)
-    # w,x = newton_to_quad(sys, newton_x)
-    # jacobian!(J, sys, w, x, basis(sys))
     L = quadlength(sys)
     w,x = sys.scratch_w[L], sys.scratch_x[L]
     newton_to_quad!(sys, w, x, newton_x)

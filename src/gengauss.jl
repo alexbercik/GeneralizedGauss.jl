@@ -1273,7 +1273,7 @@ Keyword arguments:
   canonical and nonterminal principal solves. The final returned rule is still
   polished with `solver_tolerance`. Checkpoints may be approximate when this is
   set. Default `nothing` uses a hybrid continuation tolerance:
-  `min(max(10*sqrt(solver_tolerance), 1e-8), 1e-2)`.
+  `min(max(10*sqrt(solver_tolerance), 1e-8), 1e-3)`.
   Pass `:strict` to disable the default hybrid and keep intermediate solves at
   `solver_tolerance`. An explicit positive value overrides the default directly.
 - `differentiable`: when `true`, use Newton solves with analytic derivatives

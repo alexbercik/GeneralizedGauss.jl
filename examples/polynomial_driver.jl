@@ -272,12 +272,6 @@ end
 # Create quadrature basis and compute Gauss rule
 # ============================================================================
 
-# Optionally compute Gauss rule with Float64 (commented out by default)
-#basis = quadbasis(basis_funs, basis_derivs, a, b)
-#w, x = compute_gauss_rule(basis)
-#println("w: ", w)
-#println("x: ", x)
-
 basis = quadbasis(basis_funs, basis_derivs, a_big, b_big)
 if get_checkpoints
     w, x, xi_checkpoints, w_checkpoints, x_checkpoints =

@@ -287,12 +287,6 @@ end
 # Create quadrature basis and compute Gauss rule
 # ============================================================================
 
-# Optionally compute Gauss rule with Float64 (commented out by default)
-#basis = quadbasis(basis_funs, basis_derivs, a, b)
-#w, x = compute_gauss_rule(basis)
-#println("w: ", w)
-#println("x: ", x)
-
 # Use BigFloat for higher precision (recommended for better accuracy)
 # Convert a and b to BigFloat to maintain precision
 a_big = BigFloat(a)
@@ -301,8 +295,6 @@ basis = quadbasis(basis_funs, basis_derivs, a_big, b_big)
 if orthogonalize
     basis, _ = orthogonalize_basis(basis)
 end
-#check_T_system(basis)
-#check_ECT_system(basis)
 if get_principal_representations
     w, x, xi_checkpoints, w_checkpoints, x_checkpoints =
         compute_gauss_rules(basis; solver_tolerance=newton_tolerance)

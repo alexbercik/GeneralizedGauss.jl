@@ -173,9 +173,9 @@ function orthogonalize_basis(basis::Dictionary; measure=nothing, quad_order=noth
     T_mat = LowerTriangular(T_mat) # enforce exact triangular structure
 
     # --- Conditioning diagnostics ---
-    # The old diagonal-only estimate misses cases where the transformation
-    # itself develops very large coefficients even though the diagonal spread
-    # looks harmless.  Use the actual triangular change-of-basis map instead.
+    # Diagonal-only estimates miss cases where the transformation itself
+    # develops very large coefficients even though the diagonal spread looks
+    # harmless. Use the actual triangular change-of-basis map instead.
     T_dense = Matrix(T_mat)
     cond_T = cond(R_dense)                    # cond(T) == cond(R)
     digits_lost = log10(cond_T)

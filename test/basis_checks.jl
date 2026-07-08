@@ -14,7 +14,8 @@ isdefined(@__MODULE__, :assert_rule_matches) || include("test_helpers.jl")
 
 # Extended diagnostics for the T-system / ECT-system machinery.  The default
 # fast diagnostics cover public pass/fail behavior; this file keeps focused
-# internals that are useful for regression hunting without the old long sweeps.
+# internals that are useful for regression hunting without running every slow
+# diagnostic sweep by default.
 
 @testset "Extended Wronskian references" begin
     setprecision(BigFloat, 96) do

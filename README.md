@@ -19,7 +19,8 @@ Short version:
 - `dict` defines the function space `{ϕ_i(x)}`.
 - `moments[i]` must equal `∫ ϕ_i(x) dμ(x)` for the `i`-th basis function.
 - If you do not pass `moments`, they are computed automatically.
-- If you pass `measure=μ`, the automatic path uses `moment(dict, i; measure=μ)`.
+- If you pass `measure=μ`, the automatic path uses
+  `BasisFunctions.dict_moment(dict, i; measure=μ)`.
 - If you pass both `moments` and `measure`, the explicit `moments` win.
 - If you do not pass `add_endpoint`, it defaults to `:left` for
   `principal=:lower` and `:right` for `principal=:upper`.
@@ -56,10 +57,12 @@ This is the safest option when:
 
 If `moments === nothing`, the package computes them automatically.
 
-- `compute_gauss_rule(dict; measure=μ)` uses `moment(dict, i; measure=μ)`.
-- `compute_gauss_rule(dict)` uses the default `moment(dict, i)`, i.e. Lebesgue measure
+- `compute_gauss_rule(dict; measure=μ)` uses
+  `BasisFunctions.dict_moment(dict, i; measure=μ)`.
+- `compute_gauss_rule(dict)` uses the default
+  `BasisFunctions.dict_moment(dict, i)`, i.e. Lebesgue measure.
 
-Note that for the manual `quadbasis(...)` type in this repository, `measure(dict)` is not defined.
+Note that for the manual `quadbasis(...)` type in this package, `measure(dict)` is not defined.
 
 ## 2) Which quadrature rule do you get?
 
@@ -108,12 +111,11 @@ This matters for bases or integrands with endpoint singularities:
 
 ## 3) Automatic vs explicit moments
 
-The following two approaches are equivalent, as they compute the moments
-numerically (possibly with smart evaluation, depending on the basis):
-(Internally, this calls the same function `compute_moments`, or `moment`.)
+The following two approaches are equivalent, as they compute the same moment
+vector (possibly with specialized formulas, depending on the basis):
 
 ```julia
-moments = [moment(dict, i; measure=μ) for i in eachindex(dict)]
+moments = compute_moments(dict; measure=μ)
 w, x = compute_gauss_rule(dict, moments)
 ```
 
@@ -162,8 +164,9 @@ basis = legendre_basis(n, a, b)
 For custom bases:
 - moments can still be calculated through the generic `BasisFunctions`
   integration fallback,
-- but for weighted problems it is necessary to pass either `measure=μ`
-- it may be helpful to explicitly pass `moments` to ensure accuracy.
+- but for weighted problems it is necessary to pass either `measure=μ` or
+  explicit `moments`,
+- and it may be helpful to explicitly pass `moments` to ensure accuracy.
 
 ## 5) Basis orthogonalization
 
@@ -210,7 +213,7 @@ just the final call to `compute_gauss_rule`. See the following example:
 using BasisFunctions, DomainSets, GeneralizedGauss
 
 newton_tol_digits = 30          # Newton residual target: 10^-30
-intermediate_tol_digits = 6    # Optional continuation target: 10^-12
+intermediate_tol_digits = 6     # Optional continuation target: 10^-6
 working_digits = 32             # working precision
 
 setprecision(BigFloat, working_digits; base=10)
@@ -253,15 +256,16 @@ Canonical, principal, and final Gauss-Lobatto solves use a lost-digits
 acceptance tolerance of 2 decimal digits above `ftol`; override it with
 the `lost_digits=...` keyword on `compute_gauss_rule` or `compute_gauss_rules`.
 For bases returned by `orthogonalize_basis`, the resolved value is enlarged to
-at least `ceil(digits_lost/2)`, where `digits_lost` is the decimal digit-loss
+at least `ceil(digits_lost)`, where `digits_lost` is the decimal digit-loss
 estimate printed by orthogonalization.
 
-Pass `intermediate_tolerance` to stop canonical and nonterminal principal solves
-at a looser absolute residual tolerance. This can substantially reduce
-continuation cost (i.e. speed up code). The terminal rule is still solved to
-`solver_tolerance`. The option is disabled by default. When it is enabled,
-the checkpoints returned by `compute_gauss_rules` are approximate, which is
-fine for being continuation seeds.
+Canonical and nonterminal principal solves use a hybrid intermediate tolerance
+by default: `min(max(10*sqrt(solver_tolerance), 1e-8), 1e-3)`. The terminal
+rule is still solved to `solver_tolerance`. Pass
+`intermediate_tolerance=:strict` to use the strict tolerance everywhere, or pass
+a positive number to choose a custom looser continuation tolerance. The
+checkpoints returned by `compute_gauss_rules` can therefore be approximate,
+which is fine for continuation seeds.
 
 The derivative-free MADS path evaluates basis functions in `BigFloat` and
 returns `BigFloat` weights, nodes, and checkpoints when the basis uses
@@ -308,7 +312,7 @@ N = 6
 cheb = ChebyshevT(N) → 0..1
 basis = cheb ⊕ log*cheb
 
-# ensure we add the endpoints on the right to avoid the left singularity
+# Anchor the continuation at the right endpoint to avoid the left singularity.
 w, x = compute_gauss_rule(basis; principal=:lower, add_endpoint=:right)
 ```
 
@@ -331,7 +335,7 @@ using BasisFunctions, GeneralizedGauss
 
 basis = ChebyshevT(6)
 mu = measure(basis)
-moments = [moment(basis, i; measure=mu) for i in eachindex(basis)]
+moments = compute_moments(basis; measure=mu)
 
 w, x = compute_gauss_rule(basis, moments)
 ```
@@ -385,9 +389,12 @@ fun_derivs = vcat(x -> zero(x), [x -> i*x^(i-1) for i in 1:n-1])
 basis = quadbasis(funs, fun_derivs, -1.0, 1.0)
 
 orth_basis, T_mat = orthogonalize_basis(basis)
+w, x = compute_gauss_rule(orth_basis)
+
+# If you already have moments for the original basis, transform them with the
+# same lower-triangular matrix:
+moments = compute_moments(basis)
 orth_moments = T_mat * moments
-# Note: explicitly computing the orth_moments is unecessary
-# if one instead wishes to rely upon the automatically computed moments
 
 w, x = compute_gauss_rule(orth_basis, orth_moments)
 ```
@@ -410,7 +417,7 @@ fun_derivs = vcat(x -> zero(x), [x -> i*x^(i-1) for i in 1:n-1])
 basis = quadbasis(funs, fun_derivs, -1.0, 1.0)
 mu = BasisFunctions.GenericWeight(support(basis), x -> exp(x))
 # Note: if we want to explicitly compute the moments, we can use:
-# moments = [moment(basis, i; measure=mu) for i in eachindex(basis)]
+# moments = compute_moments(basis; measure=mu)
 
 w, x = compute_gauss_rule(basis; measure=mu)
 ```
