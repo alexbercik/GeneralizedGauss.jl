@@ -63,7 +63,7 @@ Note that for the manual `quadbasis(...)` type in this repository, `measure(dict
 
 ## 2) Which quadrature rule do you get?
 
-The final rule depends on the basis length and the keyword arguments 
+The final rule depends on the basis length and the keyword arguments
 `principal` and `add_endpoint`.
 
 If `add_endpoint` is omitted, the natural default is:
@@ -103,7 +103,7 @@ This matters for bases or integrands with endpoint singularities:
   basis must be well-defined there.
 - Radau rules include one endpoint, so choose the side that avoids forcing the
   singular endpoint into the rule.
-- For LG-like and Radau rules, choose `add_endpoint` appropriately so the 
+- For LG-like and Radau rules, choose `add_endpoint` appropriately so the
   continuation algorithm is valid, avoiding the endpoint singularity.
 
 ## 3) Automatic vs explicit moments
@@ -151,7 +151,7 @@ For a mapped Legendre polynomial basis, this package provides function vectors
 that directly support both Float64 and BigFloat types:
 
 ```julia
-funs, fun_derivs = legendre_functions(n, a, b) 
+funs, fun_derivs = legendre_functions(n, a, b)
 # n is the number of basis functions, n=p+1 where p is the max polynomial degree
 basis = quadbasis(funs, fun_derivs, a, b)
 
@@ -160,9 +160,9 @@ basis = legendre_basis(n, a, b)
 ```
 
 For custom bases:
-- moments can still be calculated through the generic `BasisFunctions` 
+- moments can still be calculated through the generic `BasisFunctions`
   integration fallback,
-- but for weighted problems it is necessary to pass either `measure=μ` 
+- but for weighted problems it is necessary to pass either `measure=μ`
 - it may be helpful to explicitly pass `moments` to ensure accuracy.
 
 ## 5) Basis orthogonalization
@@ -234,7 +234,7 @@ Practical notes:
   `ChebyshevT(10) → (0.0..1.0)` keeps the support in `Float64`, which can cap
   basis evaluation accuracy near `Float64` precision. The correct approach is
   `ChebyshevT(10) → (a..b)`.
-- HOWEVER, the default bases `ChebyshevT`, `Lagrange`, etc. from 
+- HOWEVER, the default bases `ChebyshevT`, `Lagrange`, etc. from
   BasisFunctions.jl often do not natively support `BigFloat`. Therefore,
   I suggest always defining a basis when working with a desired precision.
 - If you pass explicit `moments`, those moments should also be computed/stored
@@ -438,7 +438,7 @@ construction.
 
 Use `check_T_system` to test the ordinary Chebyshev-system property directly.
 This is the current public name for the T-system diagnostic. It samples ordered
-interpolation tuples `x_1 < x_2 < ... < x_m` and checks whether the normalized 
+interpolation tuples `x_1 < x_2 < ... < x_m` and checks whether the normalized
 collocation determinant
 
 ```julia

@@ -1,8 +1,11 @@
-# minimal working example to get a quadrature rule for a polynomial basis
+# Minimal working example: compute a generalized Gaussian rule for monomials on
+# [0, 1] using BigFloat arithmetic.
 using GeneralizedGauss
 
 setprecision(BigFloat, 120; base=10)
 
+# Use moments for monomials through degree 2p + 1, which produces a p + 1 point
+# Gaussian rule in the default lower-principal path.
 p = 5
 basis_funs = [x -> x^i for i in 0:2p+1]
 basis_derivs = vcat(x -> zero(x), [x -> i*x^(i-1) for i in 1:2p+1])

@@ -11,8 +11,6 @@ apply_quad(w, x, f) = sum(w[k]*f(x[k]) for k in 1:length(w))
 apply_quad(w, x, f::BasisFunction) =
     sum(w[k]*BasisFunctions.unsafe_eval_element(f, x[k]) for k in 1:length(w))
 
-compute_weights(x, basis, B) = interpolation_matrix(basis, x)' \ B
-
 """
 A container to collect information about a quadrature rule, mainly for use
 in types describing exactness equations.
@@ -204,10 +202,6 @@ nbfree(rule::QuadRuleFixedPoints) = length(rule.free_idxs)
 
 dofs(rule::QuadRuleFixedPoints) = 2*length(rule.data) - nbfixed(rule)
 
-function setfixedpoint!(rule::QuadRuleFixedPoints, idx, xstar)
-    rule.fixed_pts[rule.fixed_idxs[idx]] = xstar
-end
-
 # newton_x contains l weights, followed by l points
 function newton_to_quad!(sys::QuadRuleFreePoints, w, x, newton_x)
     @assert length(newton_x) == dofs(sys)
@@ -235,7 +229,6 @@ function newton_to_quad!(sys::QuadRuleFixedPoints, w, x, newton_x)
     @assert length(newton_x) == dofs(sys)
 
     l = length(w)
-    P = nbfixed(sys)
 
     for i in 1:l
         w[i] = newton_x[i]
@@ -256,7 +249,6 @@ function quad_to_newton!(sys::QuadRuleFixedPoints, w, x, newton_x)
     @assert length(newton_x) == dofs(sys)
 
     l = length(w)
-    P = nbfixed(sys)
 
     for i in 1:l
         newton_x[i] = w[i]
@@ -307,7 +299,6 @@ end
 
 function jacobian!(J, sys::QuadRuleFixedPoints, w, x, basis, eval_deriv)
     l = length(w)
-    P = nbfixed(sys)
 
     # We are computing the derivative of \sum_{i=1}^l w_i ϕ_j(x_i) wrt w_i and x_i
     # as before, but now some of the x_i's are fixed and we have to skip them.

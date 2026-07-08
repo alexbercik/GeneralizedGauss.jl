@@ -1,3 +1,15 @@
-docs/build/*
+# Julia package-local environment lockfiles are useful locally, but libraries
+# should normally be reproducible from Project.toml compat bounds.
 Manifest.toml
+
+# Generated documentation and local build artifacts.
+docs/build/
 *.log
+*.aux
+*.fdb_latexmk
+*.fls
+*.synctex.gz
+
+# Local operating-system and work-in-progress artifacts.
+.DS_Store
+*.patch

@@ -1,3 +1,4 @@
+# Minimal mixed-basis example: polynomials, x^i exp(x), and exp(2x) on [-1, 1].
 using GeneralizedGauss
 
 setprecision(BigFloat, 20; base=10) do
@@ -15,6 +16,8 @@ setprecision(BigFloat, 20; base=10) do
     quad_basis, _ = orthogonalize_basis(quad_basis)
     # The late principal and final Lobatto solves are ill-conditioned, so this
     # driver allows a small per-call lost-digits acceptance window.
-    quad = compute_gauss_rule(quad_basis;
+    w, x = compute_gauss_rule(quad_basis;
         principal=:upper, verbose=true, lost_digits=5)
+    println("\nx: ", x)
+    println("w: ", w)
 end

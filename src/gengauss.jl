@@ -38,13 +38,6 @@ end
 # Helper function to get direction from add_endpoint
 get_direction(config::GaussRuleConfig) = config.add_endpoint == :right ? :right_to_left : :left_to_right
 
-endpoint_value(dict, config::GaussRuleConfig) =
-    config.add_endpoint == :right ? supportright(dict) : supportleft(dict)
-
-pivot_value(x, config::GaussRuleConfig) =
-    config.add_endpoint == :right ? x[1] : x[end]
-
-
 # Returns the principal representation of c^{2k+1} (length(dict) = 2k+1, n=2k even)
 # whose root structure includes the anchored endpoint:
 #  - add_endpoint=:right → UpperPrincipalEven (right endpoint fixed) = right-Radau
@@ -58,10 +51,6 @@ function upper_principal_rule(dict, moments, config::GaussRuleConfig)
         UpperPrincipalEven(dict, moments) :
         LowerPrincipalEven(dict, moments)
 end
-
-default_threshold(dict::Dictionary) = default_threshold(codomaintype(dict))
-default_threshold(::Type{T}) where {T <: AbstractFloat} = sqrt(eps(T))/100
-default_threshold(::Type{BigFloat}) = BigFloat(10)^(-20)
 
 function _resolve_solver_tolerance(::Type{T}, solver_tolerance;
         tolerance_floor=zero(T)) where {T}
@@ -467,7 +456,10 @@ function compute_upper_canonical_representation(dict, moments, xi, w0, x0;
         fixed_idx = config.add_endpoint == :right ? [1,length(w0)] : [length(w0)-1,length(w0)]
         rule = CanonicalRepresentationOdd_K1(dict, xi, moments, fixed_idx)
     else
-        error("TODO")
+        # The public continuation paths avoid this branch. Keep a precise error
+        # here so unsupported internal calls fail loudly instead of looking like
+        # unfinished dead code.
+        error("compute_upper_canonical_representation: odd-length upper canonical representations are not implemented for this continuation path.")
     end
 
     try
@@ -1345,7 +1337,7 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
 
     left_support = supportleft(dict)
     right_support = supportright(dict)
-    
+
     # xi_extractor extracts the node at the "end" of the sweep direction (where we're progressing toward)
     # For left_to_right sweep (add_endpoint == :left): extract rightmost node (last) - we're progressing rightward
     # For right_to_left sweep (add_endpoint == :right): extract leftmost node (first) - we're progressing leftward
@@ -1430,7 +1422,9 @@ function compute_gauss_rules(dict::Dictionary, moments::Union{Nothing, Any} = no
                     w0, x0 = [zero(T); w], [left_support; x]
                     a, b = last(x), right_support
                 elseif step.fixed_endpoint == :both
-                    error("TODO")
+                    # No default representation sequence currently asks for
+                    # both endpoints in the generic canonical stage.
+                    error("compute_gauss_rules: fixed_endpoint=:both is not implemented in the generic canonical stage.")
                 elseif isnothing(step.fixed_endpoint)
                     w0, x0 = w, x
                     if config.add_endpoint == :left
