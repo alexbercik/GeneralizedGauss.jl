@@ -1,4 +1,4 @@
-@testset "Fast T-system and ECT diagnostics" begin
+@testset "T-system and ECT diagnostics" begin
     @testset "ECT accepts monomials" begin
         setprecision(BigFloat, 96) do
             n = 4
@@ -101,5 +101,21 @@
             @test fail_result.sign_change_detected ||
                   fail_result.near_zero_detected
         end
+    end
+
+    @testset "supplied derivative verification" begin
+        funs = Function[x -> one(x), x -> x, x -> x^2]
+        correct_derivs =
+            Function[x -> zero(x), x -> one(x), x -> 2x]
+        incorrect_derivs =
+            Function[x -> zero(x), x -> one(x), x -> 3x]
+
+        correct_basis = quadbasis(funs, correct_derivs, 0.0, 1.0)
+        incorrect_basis = quadbasis(funs, incorrect_derivs, 0.0, 1.0)
+
+        @test check_basis_derivs(correct_basis;
+            num_samples=8, verbose=false, rng=MersenneTwister(1234))
+        @test !check_basis_derivs(incorrect_basis;
+            num_samples=8, verbose=false, rng=MersenneTwister(1234))
     end
 end

@@ -1,5 +1,4 @@
 using LinearAlgebra
-using Printf
 using Random
 
 # Shared helpers for the fast regression tests.  Keep reference data here so
@@ -101,35 +100,6 @@ end
 function digits_of_agreement(v, v_ref)
     err = norm(v - v_ref, Inf)
     err == 0 ? Inf : -Float64(log10(big(err)))
-end
-
-function print_runtime_comparison(label, times)
-    analytic = times.analytic
-    finite_diff_ratio = times.finite_diff / analytic
-    mads_ratio = times.mads / analytic
-
-    println("Runtime comparison ($label):")
-    println("  analytic Newton:        $(@sprintf("%.4f", times.analytic)) s")
-    println("  finite-difference path: $(@sprintf("%.4f", times.finite_diff)) s " *
-            "($(@sprintf("%.2f", finite_diff_ratio))x analytic)")
-    println("  MADS path:              $(@sprintf("%.4f", times.mads)) s " *
-            "($(@sprintf("%.2f", mads_ratio))x analytic)")
-end
-
-function best_elapsed_result(f; samples::Int=3)
-    best_time = Inf
-    best_result = nothing
-
-    for _ in 1:samples
-        result = nothing
-        elapsed = @elapsed result = f()
-        if elapsed < best_time
-            best_time = elapsed
-            best_result = result
-        end
-    end
-
-    best_time, best_result
 end
 
 function monomial_derivative_bundle(max_degree::Int, max_order::Int)

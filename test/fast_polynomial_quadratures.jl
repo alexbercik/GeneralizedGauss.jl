@@ -1,4 +1,4 @@
-@testset "Fast polynomial quadrature references" begin
+@testset "Polynomial quadrature references" begin
     basis6, moments6 = polynomial_basis_and_moments(6, Float64)
     basis5, moments5 = polynomial_basis_and_moments(5, Float64)
 

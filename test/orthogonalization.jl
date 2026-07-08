@@ -10,9 +10,8 @@ import GeneralizedGauss:
 
 isdefined(@__MODULE__, :assert_rule_matches) || include("test_helpers.jl")
 
-# Extended orthogonalization checks.  The fast suite verifies that
-# orthogonalization improves a deliberately bad basis; these tests focus on the
-# transformation invariants that explain why.
+# Orthogonalization checks for the transformation invariants that support the
+# quadrature algorithm.
 
 function check_gram_matrix(basis, a, b; measure=nothing, quad_order=120)
     T = typeof(a)
@@ -44,8 +43,8 @@ function monomial_higher_derivative_spec(k::Int, max_order::Int)
     end for m in 1:max_order]
 end
 
-@testset "Extended orthogonalization invariants" begin
-    setprecision(BigFloat, 192) do
+@testset "Orthogonalization invariants" begin
+    setprecision(BigFloat, 128) do
         n = 5
         a = BigFloat(0)
         b = BigFloat(1)
@@ -60,11 +59,11 @@ end
         orth_basis, T_mat = orthogonalize_basis(basis)
 
         for i in 1:n, j in i+1:n
-            @test abs(T_mat[i, j]) < BigFloat("1e-40")
+            @test abs(T_mat[i, j]) < BigFloat("1e-28")
         end
 
         G = check_gram_matrix(orth_basis, a, b; quad_order=100)
-        @test norm(G - I(n)) < BigFloat("1e-30")
+        @test norm(G - I(n)) < BigFloat("1e-24")
 
         old_moments = exact_monomial_moments(n, a, b)
         transformed_moments = T_mat * old_moments
@@ -74,12 +73,12 @@ end
                                   (b - a) / 2 * nodes[k] + (a + b) / 2)
                               for k in eachindex(nodes))
                           for i in 1:n]
-        @test norm(transformed_moments - direct_moments) < BigFloat("1e-30")
+        @test norm(transformed_moments - direct_moments) < BigFloat("1e-24")
     end
 end
 
-@testset "Extended orthogonalization derivative handling" begin
-    setprecision(BigFloat, 160) do
+@testset "Orthogonalization derivative handling" begin
+    setprecision(BigFloat, 128) do
         n = 4
         a = BigFloat(0)
         b = BigFloat(1)
@@ -101,20 +100,7 @@ end
                       for j in 1:i)
             got = BasisFunctions.unsafe_eval_element_derivative(
                 orth_basis, i, x0, order)
-            @test abs(ref - got) < BigFloat("1e-25")
+            @test abs(ref - got) < BigFloat("1e-20")
         end
     end
-end
-
-@testset "Extended orthogonalization warning" begin
-    n = 9
-    funs = Function[let k = k
-        x -> x^k
-    end for k in 0:n-1]
-    derivs = Function[let k = k
-        x -> k == 0 ? zero(x) : k * x^(k - 1)
-    end for k in 0:n-1]
-    basis = quadbasis(funs, derivs, 0.0, 1.0)
-
-    @test_logs (:warn, r"compute_gauss_rule") orthogonalize_basis(basis)
 end

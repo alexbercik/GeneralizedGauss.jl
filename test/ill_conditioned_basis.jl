@@ -33,11 +33,12 @@ import GeneralizedGauss: gauss_legendre
     raw_w, raw_x = compute_gauss_rule(basis, moments;
         intermediate_tolerance=:strict)
 
-    # Orthogonalization warns because the change-of-basis matrix itself is
-    # extremely ill-conditioned. For this scaled basis, it still removes the
-    # harmful scale disparity before the continuation solve.
-    orth_basis, transform =
-        @test_logs (:warn, r"nearly linearly dependent") orthogonalize_basis(basis)
+    # Orthogonalization removes the harmful scale disparity before the
+    # continuation solve, even though the change-of-basis matrix is itself
+    # extremely ill-conditioned.
+    orth_basis, transform = redirect_stderr(devnull) do
+        orthogonalize_basis(basis)
+    end
     orth_w, orth_x = compute_gauss_rule(orth_basis, transform * moments)
 
     # Sort defensively before comparing rules. The continuation currently

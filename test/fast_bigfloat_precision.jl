@@ -1,18 +1,18 @@
-@testset "Fast BigFloat polynomial precision" begin
-    setprecision(BigFloat, 192) do
-        tol = BigFloat("1e-30")
+@testset "BigFloat polynomial reproducibility" begin
+    setprecision(BigFloat, 160) do
+        tol = BigFloat("1e-32")
 
-        @testset "3-point Gauss-Legendre reaches 30 digits" begin
+        @testset "3-point Gauss-Legendre reaches 32 digits" begin
             basis, moments = polynomial_basis_and_moments(6, BigFloat)
             w, x = compute_gauss_rule(basis, moments; principal=:lower)
             ref_w, ref_x = reference_gl3(BigFloat)
 
             assert_rule_matches(w, x, ref_w, ref_x; atol=tol, rtol=tol)
-            @test digits_of_agreement(x, ref_x) >= 30
-            @test digits_of_agreement(w, ref_w) >= 30
+            @test digits_of_agreement(x, ref_x) >= 32
+            @test digits_of_agreement(w, ref_w) >= 32
         end
 
-        @testset "3-point Radau reaches 30 digits" begin
+        @testset "3-point Radau reaches 32 digits" begin
             basis, moments = polynomial_basis_and_moments(5, BigFloat)
 
             left_w, left_x = compute_gauss_rule(basis, moments;
