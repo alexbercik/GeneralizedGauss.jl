@@ -1,7 +1,13 @@
 # GeneralizedGauss.jl
 
-A package for the computation of generalized Gaussian quadrature rules. For a description of the algorithm, see the paper [On the computation of Gaussian quadrature rules for Chebyshev sets of linearly independent functions](https://arxiv.org/abs/1710.11244).
-This repository is forked from Daan Huybrechs (https://github.com/daanhb/GeneralizedGauss.jl)
+A package for the computation of generalized Gaussian quadrature rules.
+For a description of the algorithm, see the original paper:
+> Huybrechs (2017), "On the computation of Gaussian quadrature rules for Chebyshev sets of linearly independent functions" ([arXiv:1710.11244](https://arxiv.org/abs/1710.11244)).
+
+Or the update paper:
+> Bercik, Patrascu, Zingg (2026), "Construction and Optimization of Summation-By-Parts Operators for General Function Spaces Using an Improved Generalized Gaussian Quadrature Algorithm" ([arXiv:2607.08934](https://arxiv.org/abs/2607.08934)).
+
+This repository is forked from Daan Huybrechs (https://github.com/daanhb/GeneralizedGauss.jl).
 
 This package computes generalized Gaussian quadrature rules from:
 - a basis `dict`,
